@@ -101,8 +101,69 @@ Key outputs in the selected build directory. With the default build these are un
 - `compile_commands.json` synced at the project root for editor integration
 
 All third-party C++ dependencies are fetched through CMake `FetchContent`.
-Linux additionally requires system/toolchain packages for Vulkan headers, FFmpeg development libraries, and pkg-config.
-Windows additionally requires the Windows SDK and the platform `ws2_32`, `d3d11`, `d3d12`, and `dxgi` libraries. Vulkan headers are discovered from the Vulkan SDK when present or fetched through `Vulkan-Headers` when no SDK is installed; the runtime still does not link the Vulkan loader. FFmpeg can be supplied with `FFMPEG_ROOT`, or installed automatically through static vcpkg manifest mode when using `scripts/windows_configure.ps1` without `-FFmpegRoot`. Qt 6 is only required when `OXRSYS_BUILD_QT_FRONTENDS=ON`. The ARM64 preset expects an ARM64-capable Visual Studio developer environment or an IDE that honors the preset architecture. The Windows runtime advertises Vulkan, `XR_KHR_D3D11_enable`, and `XR_KHR_D3D12_enable`; D3D video streaming is currently limited to common RGBA/BGRA 8-bit DXGI color swapchains.
+Linux additionally requires system/toolchain packages for Vulkan headers, OpenGL/GLX/X11 development files, FFmpeg development libraries, and pkg-config.
+Windows additionally requires the Windows SDK and the platform `ws2_32`, `d3d11`, `d3d12`, and
+`dxgi` libraries. Vulkan headers are discovered from the Vulkan SDK when present or fetched through
+`Vulkan-Headers` when no SDK is installed; the runtime still does not link the Vulkan loader. FFmpeg
+can be supplied with `FFMPEG_ROOT`/`FFMPEG_DIR`, or installed automatically through static vcpkg
+manifest mode when using `scripts/windows_configure.ps1` without `-FFmpegRoot`. Qt 6 is only
+required when `OXRSYS_BUILD_QT_FRONTENDS=ON`. The ARM64 preset expects an ARM64-capable Visual
+Studio developer environment or an IDE that honors the preset architecture. The Windows runtime
+advertises Vulkan, `XR_KHR_D3D11_enable`, and `XR_KHR_D3D12_enable`; D3D video streaming is
+currently limited to common RGBA/BGRA 8-bit DXGI color swapchains.
+macOS uses VideoToolbox by default; FFmpeg development libraries are only required on macOS when
+configuring the runtime with `-DOXRSYS_VIDEO_ENCODER=FFMPEG`.
+
+The runtime video encoder can be selected at configure time:
+
+```bash
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DOXRSYS_VIDEO_ENCODER=AUTO
+```
+
+Accepted values are:
+
+- `AUTO`: VideoToolbox on Apple platforms, FFmpeg on Linux and Windows.
+- `VIDEOTOOLBOX`: Apple platforms only.
+- `FFMPEG`: FFmpeg on Linux and Windows, or an explicit macOS FFmpeg codec/pipeline validation build.
+
+When `FFMPEG` is selected, CMake resolves FFmpeg with `pkg-config`, Homebrew-style prefixes, or
+`-DFFMPEG_ROOT=/path/to/prefix`.
+
+macOS Vulkan/MoltenVK validation builds should use the FFmpeg encoder explicitly:
+
+```bash
+cmake -B build-vulkan-ffmpeg -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DOXRSYS_VIDEO_ENCODER=FFMPEG
+cmake --build build-vulkan-ffmpeg
+ctest --test-dir build-vulkan-ffmpeg --output-on-failure
+```
+
+On Linux, the runtime enables both Vulkan and the first OpenGL GLX backend when the required
+development files are present. Vulkan color swapchains are copied to host-visible staging buffers
+for FFmpeg encode. OpenGL color swapchains are snapshotted through FBO/PBO readback slots; depth
+formats are available for application compatibility but are not video sources.
+
+On Windows, use the helper when possible so Visual Studio, Ninja, Vulkan headers, and vcpkg FFmpeg
+setup stay consistent:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows_configure.ps1 -Architecture x64
+powershell -ExecutionPolicy Bypass -File scripts\windows_build.ps1 -Architecture x64
+ctest --test-dir build/windows-x64 --output-on-failure
+```
+
+For a local FFmpeg development package, use `-FFmpegRoot` with the helper or configure manually:
+
+```powershell
+cmake -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+  -DOXRSYS_VIDEO_ENCODER=FFMPEG `
+  -DFFMPEG_ROOT=C:\path\to\ffmpeg
+cmake --build build-win
+ctest --test-dir build-win --output-on-failure
+```
+
+The Windows backend exposes Vulkan, D3D11, and D3D12 in this milestone. OpenGL Win32/WGL is not
+advertised yet; Linux remains the only OpenGL runtime backend.
 
 ## Versioning
 
@@ -324,6 +385,8 @@ selection through `XR_RUNTIME_JSON`, OXRSys Home, or `scripts/oxrsys_runtime_def
 - If a Home-launched app does not pick up the runtime, check the Apps tab logs and the Runtime
   Registration launch target. The launcher uses the selected manifest path shown by Home.
 - If Android tooling is not found, verify `clients/Android/android-vr/local.properties`, Java 17, and the installed SDK/NDK versions described in [install.md](install.md).
+- For Quest sideload validation, use `./gradlew assembleRelease`; `assembleOptimizedRelease` is only
+  for diagnosing non-debuggable optimized Android regressions.
 - If the runtime is not discovered, check that `XR_RUNTIME_JSON` or `~/.config/openxr/1/active_runtime.json` points to `build/runtime/oxrsys-runtime.json`.
 - On Windows, if apps launched outside Qt Home do not use OXRSys, check `HKLM\SOFTWARE\Khronos\OpenXR\1\ActiveRuntime` or use Qt Home's global registration action.
 - If an exported macOS Unity Player logs `Failed to load openxr runtime loader.`, install

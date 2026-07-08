@@ -56,6 +56,7 @@ target_include_directories(oxrsys-home PRIVATE
 
 target_link_libraries(oxrsys-home PRIVATE
     Qt6::Widgets
+    Qt6::Network
     oxrsys-simulator-shared
 )
 if(WIN32)
@@ -81,6 +82,7 @@ target_include_directories(oxrsys-home-tests PRIVATE
 
 target_link_libraries(oxrsys-home-tests PRIVATE
     Qt6::Widgets
+    Qt6::Network
 )
 if(WIN32)
     target_link_libraries(oxrsys-home-tests PRIVATE

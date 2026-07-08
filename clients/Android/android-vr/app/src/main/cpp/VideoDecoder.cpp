@@ -5,9 +5,11 @@
 #include <android/hardware_buffer.h>
 #include <android/log.h>
 #include <android/native_window.h>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <media/NdkMediaFormat.h>
+#include <oxrsys/protocol/Protocol.h>
 
 #define LOG_TAG "OXRSys-Decoder"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -18,6 +20,34 @@ namespace oxr
 
 namespace
 {
+
+const char* CodecMimeType(protocol::VideoCodec codec)
+{
+    switch (codec)
+    {
+        case protocol::VideoCodec::H264:
+            return "video/avc";
+        case protocol::VideoCodec::H265:
+            return "video/hevc";
+        case protocol::VideoCodec::AV1:
+        default:
+            return nullptr;
+    }
+}
+
+const char* CodecDisplayName(protocol::VideoCodec codec)
+{
+    switch (codec)
+    {
+        case protocol::VideoCodec::H264:
+            return "H.264";
+        case protocol::VideoCodec::AV1:
+            return "AV1";
+        case protocol::VideoCodec::H265:
+        default:
+            return "H.265";
+    }
+}
 
 int64_t SteadyClockNowNs()
 {
@@ -32,10 +62,20 @@ VideoDecoder::~VideoDecoder()
     Shutdown();
 }
 
-bool VideoDecoder::Initialize(uint32_t width, uint32_t height)
+bool VideoDecoder::Initialize(uint32_t width, uint32_t height, protocol::VideoCodec videoCodec)
 {
+    const char* mimeType = CodecMimeType(videoCodec);
+    if (mimeType == nullptr)
+    {
+        LOGE("Unsupported video codec: %u", static_cast<uint32_t>(videoCodec));
+        return false;
+    }
+
+    Shutdown();
+
     width_ = width;
     height_ = height;
+    activeCodec_ = videoCodec;
 
     // Create AImageReader as the output surface for MediaCodec.
     // We use AHardwareBuffer from the decoded AImage for zero-copy GPU rendering
@@ -44,7 +84,7 @@ bool VideoDecoder::Initialize(uint32_t width, uint32_t height)
     media_status_t imgStatus = AImageReader_new(
         width, height,
         AIMAGE_FORMAT_YUV_420_888,
-        2,  // maxImages — minimal queue for lowest latency
+        3,  // maxImages — allows a decoder output thread plus one held render image
         &imageReader_);
 
     if (imgStatus != AMEDIA_OK || imageReader_ == nullptr)
@@ -65,11 +105,11 @@ bool VideoDecoder::Initialize(uint32_t width, uint32_t height)
 
     LOGI("AImageReader created: %ux%u, format=YUV_420_888", width, height);
 
-    // Create H.265 decoder
-    codec_ = AMediaCodec_createDecoderByType("video/hevc");
+    // Create decoder for the selected stream codec.
+    codec_ = AMediaCodec_createDecoderByType(mimeType);
     if (codec_ == nullptr)
     {
-        LOGE("Failed to create H.265 decoder");
+        LOGE("Failed to create %s decoder (%s)", CodecDisplayName(activeCodec_), mimeType);
         AImageReader_delete(imageReader_);
         imageReader_ = nullptr;
         outputWindow_ = nullptr;
@@ -78,10 +118,16 @@ bool VideoDecoder::Initialize(uint32_t width, uint32_t height)
 
     // Configure decoder
     AMediaFormat* format = AMediaFormat_new();
-    AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, "video/hevc");
+    AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, mimeType);
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, width);
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, height);
-    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_MAX_INPUT_SIZE, width * height);
+    const uint64_t pixelCount = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    const uint64_t maxInputSize = std::clamp<uint64_t>(
+        pixelCount * 4u,
+        2u * 1024u * 1024u,
+        protocol::TCP_MAX_RECORD_PAYLOAD);
+    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_MAX_INPUT_SIZE,
+                          static_cast<int32_t>(maxInputSize));
 
     // Low latency mode (Android 11+)
     AMediaFormat_setInt32(format, "low-latency", 1);
@@ -114,12 +160,23 @@ bool VideoDecoder::Initialize(uint32_t width, uint32_t height)
         return false;
     }
 
-    LOGI("H.265 decoder initialized with AImageReader surface: %ux%u", width, height);
+    outputThreadRunning_.store(true);
+    outputThread_ = std::thread(&VideoDecoder::OutputThreadMain, this);
+
+    LOGI("%s decoder initialized with AImageReader surface: %ux%u mime=%s maxInput=%llu",
+         CodecDisplayName(activeCodec_), width, height, mimeType,
+         (unsigned long long)maxInputSize);
     return true;
 }
 
 void VideoDecoder::Shutdown()
 {
+    outputThreadRunning_.store(false);
+    if (outputThread_.joinable())
+    {
+        outputThread_.join();
+    }
+
     if (currentImage_ != nullptr)
     {
         AImage_delete(currentImage_);
@@ -141,10 +198,12 @@ void VideoDecoder::Shutdown()
         AImageReader_delete(imageReader_);
         imageReader_ = nullptr;
     }
+    pendingFrames_.clear();
+    outputFramesReleasedSinceAcquire_.store(0);
 }
 
 bool VideoDecoder::SubmitNalUnit(const uint8_t* data, size_t size, int64_t presentationTimeUs,
-                                 int64_t receiveTimeNs)
+                                 int64_t receiveTimeNs, bool alphaBlend)
 {
     if (codec_ == nullptr)
     {
@@ -163,17 +222,18 @@ bool VideoDecoder::SubmitNalUnit(const uint8_t* data, size_t size, int64_t prese
     if (buffer == nullptr || bufferSize < size)
     {
         LOGE("Input buffer too small: %zu < %zu", bufferSize, size);
+        AMediaCodec_queueInputBuffer(codec_, bufferIndex, 0, 0, presentationTimeUs, 0);
         return false;
     }
 
     memcpy(buffer, data, size);
     int64_t submitTimeNs = SteadyClockNowNs();
     AMediaCodec_queueInputBuffer(codec_, bufferIndex, 0, size, presentationTimeUs, 0);
-    RememberSubmittedFrame(presentationTimeUs, receiveTimeNs, submitTimeNs);
+    RememberSubmittedFrame(presentationTimeUs, receiveTimeNs, submitTimeNs, alphaBlend);
     return true;
 }
 
-uint32_t VideoDecoder::FlushOutputToSurface()
+uint32_t VideoDecoder::FlushOutputToSurface(int64_t timeoutUs)
 {
     // Dequeue all available output buffers and render them to the AImageReader surface.
     // With surface output, we must release buffers with render=true for AImageReader to receive them.
@@ -181,7 +241,8 @@ uint32_t VideoDecoder::FlushOutputToSurface()
     uint32_t releasedCount = 0;
     for (;;)
     {
-        ssize_t bufferIndex = AMediaCodec_dequeueOutputBuffer(codec_, &info, 0);
+        ssize_t bufferIndex = AMediaCodec_dequeueOutputBuffer(codec_, &info, timeoutUs);
+        timeoutUs = 0;
 
         if (bufferIndex == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED)
         {
@@ -208,9 +269,24 @@ uint32_t VideoDecoder::FlushOutputToSurface()
         // Release to surface (render = true) so AImageReader receives the frame
         AMediaCodec_releaseOutputBuffer(codec_, bufferIndex, true);
         releasedCount++;
+        outputFramesReleasedSinceAcquire_.fetch_add(1);
     }
 
     return releasedCount;
+}
+
+void VideoDecoder::OutputThreadMain()
+{
+    LOGI("Decoder output thread started");
+    while (outputThreadRunning_.load())
+    {
+        if (codec_ == nullptr)
+        {
+            break;
+        }
+        FlushOutputToSurface(1000);
+    }
+    LOGI("Decoder output thread ended");
 }
 
 bool VideoDecoder::AcquireFrame(DecodedFrame* outFrame)
@@ -220,8 +296,7 @@ bool VideoDecoder::AcquireFrame(DecodedFrame* outFrame)
         return false;
     }
 
-    // First, flush any decoded output buffers to the AImageReader surface
-    uint32_t outputFramesReleased = FlushOutputToSurface();
+    const uint32_t outputFramesReleased = outputFramesReleasedSinceAcquire_.exchange(0);
 
     // Release previous image if still held
     if (currentImage_ != nullptr)
@@ -306,6 +381,7 @@ bool VideoDecoder::AcquireFrame(DecodedFrame* outFrame)
     {
         outFrame->localReceiveTimeNs = metadata.receiveTimeNs;
         outFrame->localSubmitTimeNs = metadata.submitTimeNs;
+        outFrame->alphaBlend = metadata.alphaBlend;
     }
 
     return true;
@@ -320,7 +396,8 @@ void VideoDecoder::ReleaseFrame()
     }
 }
 
-void VideoDecoder::RememberSubmittedFrame(int64_t presentationTimeUs, int64_t receiveTimeNs, int64_t submitTimeNs)
+void VideoDecoder::RememberSubmittedFrame(int64_t presentationTimeUs, int64_t receiveTimeNs,
+                                          int64_t submitTimeNs, bool alphaBlend)
 {
     std::lock_guard<std::mutex> lock(metadataMutex_);
 
@@ -332,11 +409,12 @@ void VideoDecoder::RememberSubmittedFrame(int64_t presentationTimeUs, int64_t re
                 ? receiveTimeNs
                 : std::min(metadata.receiveTimeNs, receiveTimeNs);
             metadata.submitTimeNs = std::max(metadata.submitTimeNs, submitTimeNs);
+            metadata.alphaBlend = metadata.alphaBlend || alphaBlend;
             return;
         }
     }
 
-    pendingFrames_.push_back({presentationTimeUs, receiveTimeNs, submitTimeNs});
+    pendingFrames_.push_back({presentationTimeUs, receiveTimeNs, submitTimeNs, alphaBlend});
     while (pendingFrames_.size() > 64)
     {
         pendingFrames_.pop_front();

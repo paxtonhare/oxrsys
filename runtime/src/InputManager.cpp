@@ -442,9 +442,9 @@ void InputManager::GetEyeViews(XrView* views, uint32_t viewCount) const
         views[i].pose.position.y = eyePos.y;
         views[i].pose.position.z = eyePos.z;
 
-        // Compute aspect-ratio-correct FOV. fov_degrees is the vertical FOV;
-        // horizontal FOV is derived from the texture aspect ratio so angular
-        // pixels are square, matching what the Quest compositor expects.
+        // Legacy fallback for clients that do not send TrackingPacket.eyeFov.
+        // fov_degrees is the vertical FOV; horizontal FOV is derived from the
+        // texture aspect ratio so angular pixels are square.
         if (hasStreamingFov)
         {
             if (i == 0)
@@ -465,8 +465,11 @@ void InputManager::GetEyeViews(XrView* views, uint32_t viewCount) const
             const ConfigValues config = Config::Get().GetValues();
             float fovDeg = static_cast<float>(config.fovDegrees);
             float halfAngleV = fovDeg * 0.5f * 3.14159265f / 180.0f;
-            constexpr float aspect = static_cast<float>(Instance::EyeWidth) /
-                                      static_cast<float>(Instance::EyeHeight);
+            uint32_t baseWidth = 0;
+            uint32_t baseHeight = 0;
+            RenderBaseEyeResolution(baseWidth, baseHeight);
+            const float aspect = static_cast<float>(baseWidth) /
+                                 static_cast<float>(baseHeight);
             float halfAngleH = std::atan(std::tan(halfAngleV) * aspect);
             views[i].fov.angleLeft = -halfAngleH;
             views[i].fov.angleRight = halfAngleH;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "Session.h"
+#include "CompositionLayerAlpha.h"
 #include "Config.h"
 #include "Instance.h"
 #include "Runtime.h"
@@ -8,17 +9,16 @@
 #include "Space.h"
 #include "InputManager.h"
 #include "StreamingServer.h"
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <numeric>
 #include <thread>
 #include <utility>
-
-#include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
-#include <openxr/openxr_platform.h>
 
 namespace
 {
@@ -48,100 +48,15 @@ SessionMetricSummary SummarizeSessionSamples(std::vector<double>& samples)
     return summary;
 }
 
-bool IsSupportedEnvironmentBlendMode(XrEnvironmentBlendMode blendMode)
+bool IsSupportedEnvironmentBlendMode(XrEnvironmentBlendMode blendMode, const Instance* instance)
 {
-    return blendMode == XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-}
-
-template <size_t N>
-bool ContainsFormat(const int64_t (&formats)[N], int64_t format)
-{
-    return std::find(std::begin(formats), std::end(formats), format) != std::end(formats);
-}
-
-bool IsSupportedSwapchainFormat(GraphicsApi api, int64_t format)
-{
-    static const int64_t metalFormats[] = {
-        81,  // MTLPixelFormatBGRA8Unorm_sRGB
-        80,  // MTLPixelFormatBGRA8Unorm
-        71,  // MTLPixelFormatRGBA8Unorm_sRGB
-        70,  // MTLPixelFormatRGBA8Unorm
-        252, // MTLPixelFormatDepth32Float
-        260, // MTLPixelFormatDepth32Float_Stencil8
-    };
-
-    if (api == GraphicsApi::Metal)
+    if (blendMode == XR_ENVIRONMENT_BLEND_MODE_OPAQUE)
     {
-        return ContainsFormat(metalFormats, format);
+        return true;
     }
-
-#ifdef XR_USE_GRAPHICS_API_VULKAN
-    static const int64_t vulkanFormats[] = {
-        50,  // VK_FORMAT_B8G8R8A8_SRGB
-        44,  // VK_FORMAT_B8G8R8A8_UNORM
-        43,  // VK_FORMAT_R8G8B8A8_SRGB
-        37,  // VK_FORMAT_R8G8B8A8_UNORM
-        126, // VK_FORMAT_D32_SFLOAT
-        130, // VK_FORMAT_D32_SFLOAT_S8_UINT
-    };
-    if (api == GraphicsApi::Vulkan)
-    {
-        return ContainsFormat(vulkanFormats, format);
-    }
-#endif
-
-#if defined(_WIN32)
-    static const int64_t d3dFormats[] = {
-        DXGI_FORMAT_R8G8B8A8_UNORM,
-        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-        DXGI_FORMAT_B8G8R8A8_UNORM,
-        DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
-        DXGI_FORMAT_D16_UNORM,
-        DXGI_FORMAT_D24_UNORM_S8_UINT,
-        DXGI_FORMAT_D32_FLOAT,
-        DXGI_FORMAT_D32_FLOAT_S8X24_UINT,
-    };
-    if (api == GraphicsApi::D3D11 || api == GraphicsApi::D3D12)
-    {
-        return ContainsFormat(d3dFormats, format);
-    }
-#endif
-
-    return false;
-}
-
-XrResult ValidateSwapchainCreateInfo(GraphicsApi api, const XrSwapchainCreateInfo& createInfo)
-{
-    if (createInfo.type != XR_TYPE_SWAPCHAIN_CREATE_INFO ||
-        createInfo.width == 0 || createInfo.height == 0 ||
-        createInfo.sampleCount != 1 ||
-        createInfo.faceCount != 1 ||
-        createInfo.mipCount != 1 ||
-        createInfo.arraySize == 0)
-    {
-        return XR_ERROR_VALIDATION_FAILURE;
-    }
-    if (!IsSupportedSwapchainFormat(api, createInfo.format))
-    {
-        return XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED;
-    }
-    return XR_SUCCESS;
-}
-
-const char* GraphicsApiName(GraphicsApi api)
-{
-    switch (api)
-    {
-        case GraphicsApi::Metal:
-            return "Metal";
-        case GraphicsApi::Vulkan:
-            return "Vulkan";
-        case GraphicsApi::D3D11:
-            return "D3D11";
-        case GraphicsApi::D3D12:
-            return "D3D12";
-    }
-    return "unknown";
+    return blendMode == XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND &&
+           instance != nullptr &&
+           instance->SupportsPassthroughBlendMode();
 }
 
 constexpr uint32_t kMaxSupportedCompositionLayers = XR_MIN_COMPOSITION_LAYERS_SUPPORTED;
@@ -176,33 +91,6 @@ bool IsValidPose(const XrPosef& pose)
     return std::fabs(magnitude - 1.0f) <= 0.01f;
 }
 
-#if defined(_WIN32)
-template <typename T>
-void AddRefIfNotNull(T* value)
-{
-    if (value != nullptr)
-    {
-        value->AddRef();
-    }
-}
-
-template <typename T>
-void ReleaseIfNotNull(T*& value)
-{
-    if (value != nullptr)
-    {
-        value->Release();
-        value = nullptr;
-    }
-}
-#endif
-
-bool IsFiniteFov(const XrFovf& fov)
-{
-    return std::isfinite(fov.angleLeft) && std::isfinite(fov.angleRight) &&
-           std::isfinite(fov.angleUp) && std::isfinite(fov.angleDown);
-}
-
 glm::quat ToGlm(const XrQuaternionf& q)
 {
     return glm::quat(q.w, q.x, q.y, q.z);
@@ -223,33 +111,43 @@ XrVector3f ToXr(const glm::vec3& v)
     return {v.x, v.y, v.z};
 }
 
-XrPosef PoseRelativeToBase(const XrPosef& worldPose, const XrPosef& baseWorldPose)
+XrPosef PoseRelativeToBase(const XrPosef& pose, const XrPosef& baseWorldPose)
 {
     const glm::quat baseRotInv = glm::inverse(ToGlm(baseWorldPose.orientation));
+    const glm::quat poseRot = ToGlm(pose.orientation);
     const glm::vec3 basePos = ToGlm(baseWorldPose.position);
-    const glm::quat worldRot = ToGlm(worldPose.orientation);
-    const glm::vec3 worldPos = ToGlm(worldPose.position);
+    const glm::vec3 posePos = ToGlm(pose.position);
 
-    XrPosef pose = {};
-    pose.orientation = ToXr(baseRotInv * worldRot);
-    pose.position = ToXr(baseRotInv * (worldPos - basePos));
-    return pose;
+    XrPosef relative = {};
+    relative.orientation = ToXr(baseRotInv * poseRot);
+    relative.position = ToXr(baseRotInv * (posePos - basePos));
+    return relative;
+}
+
+bool IsFiniteFov(const XrFovf& fov)
+{
+    return std::isfinite(fov.angleLeft) && std::isfinite(fov.angleRight) &&
+           std::isfinite(fov.angleUp) && std::isfinite(fov.angleDown);
 }
 
 } // namespace
 
 Session::Session(Instance* instance, void* metalDevice, void* metalCommandQueue)
-    : Session(instance, GraphicsContext::Metal(metalDevice, metalCommandQueue))
+    : instance_(instance), graphicsContext_(GraphicsContext::Metal(metalDevice, metalCommandQueue))
 {
-}
+    inputManager_ = std::make_unique<InputManager>();
 
-#ifdef XR_USE_GRAPHICS_API_VULKAN
-Session::Session(Instance* instance, void* metalDevice,
-                  const VulkanGraphicsContext& vulkanContext)
-    : Session(instance, GraphicsContext::Vulkan(vulkanContext, metalDevice))
-{
+    startTime_ = std::chrono::steady_clock::now();
+    lastFrameTime_ = startTime_;
+
+    Runtime::Get().RegisterHandle(handle_, this);
+    instance_->SetSession(this);
+
+    TransitionState(XR_SESSION_STATE_IDLE);
+    TransitionState(XR_SESSION_STATE_READY);
+
+    spdlog::info("OXRSys: Metal session created");
 }
-#endif
 
 Session::Session(Instance* instance, const GraphicsContext& graphicsContext)
     : instance_(instance), graphicsContext_(graphicsContext)
@@ -265,34 +163,31 @@ Session::Session(Instance* instance, const GraphicsContext& graphicsContext)
     TransitionState(XR_SESSION_STATE_IDLE);
     TransitionState(XR_SESSION_STATE_READY);
 
-    spdlog::info("OXRSys: {} session created", GraphicsApiName(graphicsContext_.api));
+    const char* apiName = "unknown";
+    switch (graphicsContext_.api)
+    {
+        case GraphicsApi::Metal:
+            apiName = "Metal";
+            break;
+        case GraphicsApi::Vulkan:
+            apiName = "Vulkan";
+            break;
+        case GraphicsApi::OpenGL:
+            apiName = "OpenGL";
+            break;
+        case GraphicsApi::D3D11:
+            apiName = "D3D11";
+            break;
+        case GraphicsApi::D3D12:
+            apiName = "D3D12";
+            break;
+    }
+    spdlog::info("OXRSys: {} session created", apiName);
 }
-
-#if defined(_WIN32)
-Session::Session(Instance* instance, const D3D11GraphicsContext& d3d11Context)
-    : Session(instance, GraphicsContext::D3D11(d3d11Context))
-{
-    AddRefIfNotNull(graphicsContext_.d3d11.device);
-    AddRefIfNotNull(graphicsContext_.d3d11.immediateContext);
-}
-
-Session::Session(Instance* instance, const D3D12GraphicsContext& d3d12Context)
-    : Session(instance, GraphicsContext::D3D12(d3d12Context))
-{
-    AddRefIfNotNull(graphicsContext_.d3d12.device);
-    AddRefIfNotNull(graphicsContext_.d3d12.queue);
-}
-#endif
 
 Session::~Session()
 {
     Shutdown();
-#if defined(_WIN32)
-    ReleaseIfNotNull(graphicsContext_.d3d11.immediateContext);
-    ReleaseIfNotNull(graphicsContext_.d3d11.device);
-    ReleaseIfNotNull(graphicsContext_.d3d12.queue);
-    ReleaseIfNotNull(graphicsContext_.d3d12.device);
-#endif
     instance_->RemoveEventsForSession(reinterpret_cast<XrSession>(handle_));
     instance_->SetSession(nullptr);
     Runtime::Get().RemoveHandle(handle_);
@@ -612,7 +507,7 @@ XrResult Session::EndFrame(const XrFrameEndInfo* frameEndInfo)
     {
         return XR_ERROR_TIME_INVALID;
     }
-    if (!IsSupportedEnvironmentBlendMode(frameEndInfo->environmentBlendMode))
+    if (!IsSupportedEnvironmentBlendMode(frameEndInfo->environmentBlendMode, instance_))
     {
         return XR_ERROR_ENVIRONMENT_BLEND_MODE_UNSUPPORTED;
     }
@@ -625,12 +520,16 @@ XrResult Session::EndFrame(const XrFrameEndInfo* frameEndInfo)
         return XR_ERROR_LAYER_INVALID;
     }
 
+    // Extract submitted eye sources for streaming. Missing streaming sources do
+    // not invalidate the OpenXR frame; they only skip this frame's video encode.
+    const bool passthroughEnabled = instance_ != nullptr &&
+                                    instance_->SupportsPassthroughBlendMode();
+    const bool environmentAlphaBlend =
+        frameEndInfo->environmentBlendMode == XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND;
+    bool sourceAlphaProjectionLayer = false;
+
     CheckStreamingConnection();
     const bool captureStreamingFrame = streamingServer_ && streamingServer_->IsClientConnected();
-
-    // Extract submitted eye sources only when a headset client is ready for streaming.
-    // Missing streaming sources do not invalidate the OpenXR frame; they only skip
-    // this frame's video encode.
     FrameSource frameSource = {};
 
     for (uint32_t i = 0; i < frameEndInfo->layerCount; i++)
@@ -645,10 +544,16 @@ XrResult Session::EndFrame(const XrFrameEndInfo* frameEndInfo)
         {
             case XR_TYPE_COMPOSITION_LAYER_PROJECTION:
             {
+                const auto& projectionLayer =
+                    *reinterpret_cast<const XrCompositionLayerProjection*>(layer);
+                if (oxrsys::runtime::IsSourceAlphaProjectionLayerForStreaming(
+                        projectionLayer.layerFlags, passthroughEnabled))
+                {
+                    sourceAlphaProjectionLayer = true;
+                }
+
                 XrResult result = ValidateProjectionLayer(
-                    *reinterpret_cast<const XrCompositionLayerProjection*>(layer),
-                    frameSource,
-                    captureStreamingFrame);
+                    projectionLayer, frameSource, captureStreamingFrame);
                 if (result != XR_SUCCESS)
                 {
                     return result;
@@ -669,11 +574,37 @@ XrResult Session::EndFrame(const XrFrameEndInfo* frameEndInfo)
         }
     }
 
+    frameSource.alphaBlend = oxrsys::runtime::IsAlphaFrameForStreaming(
+        frameEndInfo->environmentBlendMode, sourceAlphaProjectionLayer);
+
+    if (!environmentAlphaBlend && sourceAlphaProjectionLayer)
+    {
+        static std::atomic_bool loggedSourceAlphaProjection{false};
+        if (!loggedSourceAlphaProjection.exchange(true))
+        {
+            spdlog::info("OXRSys: using projection layer source-alpha flags for passthrough streaming");
+        }
+    }
+
     // Send to connected headset client if streaming
-    if (captureStreamingFrame && streamingServer_ && streamingServer_->IsClientConnected())
+    if (streamingServer_ && streamingServer_->IsClientConnected())
     {
         auto sendStart = Clock::now();
-        streamingServer_->SendFrame(std::move(frameSource));
+        if (lastRenderHasPose_)
+        {
+            const float renderHeadOrientation[4] = {
+                lastRenderHeadPose_.orientation.x, lastRenderHeadPose_.orientation.y,
+                lastRenderHeadPose_.orientation.z, lastRenderHeadPose_.orientation.w};
+            const float renderHeadPosition[3] = {
+                lastRenderHeadPose_.position.x, lastRenderHeadPose_.position.y,
+                lastRenderHeadPose_.position.z};
+            streamingServer_->SendFrame(std::move(frameSource), renderHeadOrientation,
+                                        renderHeadPosition);
+        }
+        else
+        {
+            streamingServer_->SendFrame(std::move(frameSource));
+        }
         double enqueueMs = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
             Clock::now() - sendStart).count();
 
@@ -779,9 +710,11 @@ XrResult Session::ValidateProjectionLayer(const XrCompositionLayerProjection& la
 
         if (captureFrameSource)
         {
-            auto* swapchain = Runtime::Get().FromHandle<Swapchain>(reinterpret_cast<uint64_t>(view.subImage.swapchain));
+            auto* swapchain = Runtime::Get().FromHandle<Swapchain>(
+                reinterpret_cast<uint64_t>(view.subImage.swapchain));
             FrameImageSource imageSource =
                 swapchain->GetLastReleasedFrameImageSource(view.subImage.imageArrayIndex);
+            // Honor the per-view sub-rectangle: UE packs both eyes into one swapchain side-by-side.
             imageSource.sourceX = static_cast<uint32_t>(view.subImage.imageRect.offset.x);
             imageSource.sourceY = static_cast<uint32_t>(view.subImage.imageRect.offset.y);
             imageSource.sourceWidth = static_cast<uint32_t>(view.subImage.imageRect.extent.width);
@@ -875,6 +808,12 @@ XrResult Session::LocateViews(const XrViewLocateInfo* viewLocateInfo, XrViewStat
     {
         views[i].pose = PoseRelativeToBase(views[i].pose, baseWorldPose);
     }
+
+    // Remember the exact head pose this frame is being rendered for, so the streamed frame can be
+    // tagged with it at submission instead of a later re-prediction.
+    lastRenderHeadPose_ = inputManager_->GetHeadPose();
+    lastRenderHasPose_ = true;
+
     return XR_SUCCESS;
 }
 
@@ -936,21 +875,29 @@ XrResult Session::CreateSwapchain(const XrSwapchainCreateInfo* createInfo, XrSwa
     {
         return XR_ERROR_VALIDATION_FAILURE;
     }
-    *swapchain = XR_NULL_HANDLE;
-
-    XrResult validationResult = ValidateSwapchainCreateInfo(graphicsContext_.api, *createInfo);
-    if (validationResult != XR_SUCCESS)
+    if (createInfo->type != XR_TYPE_SWAPCHAIN_CREATE_INFO ||
+        createInfo->width == 0 ||
+        createInfo->height == 0 ||
+        createInfo->faceCount != 1 ||
+        createInfo->arraySize == 0 ||
+        createInfo->sampleCount != 1)
     {
-        return validationResult;
+        *swapchain = XR_NULL_HANDLE;
+        return XR_ERROR_VALIDATION_FAILURE;
+    }
+    if (createInfo->mipCount != 1)
+    {
+        *swapchain = XR_NULL_HANDLE;
+        return XR_ERROR_FEATURE_UNSUPPORTED;
     }
 
+    *swapchain = XR_NULL_HANDLE;
     auto sc = std::make_unique<Swapchain>(graphicsContext_, createInfo);
     XrResult initializationResult = sc->InitializationResult();
     if (initializationResult != XR_SUCCESS)
     {
         return initializationResult;
     }
-
     *swapchain = reinterpret_cast<XrSwapchain>(sc->GetHandle());
     swapchains_.push_back(std::move(sc));
     return XR_SUCCESS;
@@ -1040,10 +987,12 @@ void Session::StartStreamingIfNeeded()
     streamingServer_ = std::make_unique<StreamingServer>();
     streamingServer_->SetGraphicsContext(graphicsContext_);
 
-    // Use default resolution until first swapchain is created
-    // Will be updated when we know the actual render resolution
-    uint32_t width = 1512;
-    uint32_t height = 1680;
+    // Per-eye render resolution for the configured render_device — this must match the
+    // recommendedImageRect the app renders into (see RenderBaseEyeResolution), otherwise the
+    // encoder is sized off a stale default and the stream stays at that resolution.
+    uint32_t width = 0;
+    uint32_t height = 0;
+    RenderBaseEyeResolution(width, height);
     uint32_t refreshHz = 90;
 
     if (streamingServer_->Start(width, height, refreshHz))

@@ -9,16 +9,29 @@ struct OXRSysServerConfig: Equatable {
 
     var runtimeEnabled = true
     var bitrateMbps = 50
-    var fovDegrees = 100
     var refreshRateHz = 72
     var resolutionScale = 0.75
+    var dynamicResolutionMinScale = 0.50
+    var renderDevice: RenderDeviceSetting = .quest3
     var keyframeIntervalSec = 2
+    var videoCodec: VideoCodecSetting = .h265
     var encoderPreset: EncoderPreset = .balanced
+    var encoder10Bit = false
     var transport: StreamingTransportSetting = .auto
     var foveatedEncodingPreset: FoveationPresetSetting = .off
-    var clientFoveationPreset: FoveationPresetSetting = .medium
+    var clientFoveationPreset: ClientFoveationPresetSetting = .auto
     var clientUpscaling = false
+    var clientSharpening = 0.0
+    var clientReprojection: ClientReprojectionSetting = .pose
+    var abrMode: AbrModeSetting = .bitrate
+    var passthroughEnabled = false
+    var appAlphaBlendPassthrough = false
+    var occlusionMode: OcclusionModeSetting = .off
     var headsetAudio = false
+    var spatialEnabled = false
+    var spatialAnchors = false
+    var spatialScene = false
+    var spatialPersistence = false
     var fileLogging = true
     var questLogcat = false
 
@@ -36,9 +49,6 @@ struct OXRSysServerConfig: Equatable {
     # Try 20-30 for lower latency, 50+ for quality.
     bitrate_mbps = 50
 
-    # Rendering FOV in degrees (symmetric). Must match Quest client's kMacHalfFov.
-    fov_degrees = 100
-
     # Preferred headset display refresh rate: 60, 72, 80, 90, or 120.
     refresh_rate_hz = 72
 
@@ -46,9 +56,21 @@ struct OXRSysServerConfig: Equatable {
     # 0.5 = half resolution (recommended for WiFi), 1.0 = native resolution.
     resolution_scale = 0.75
 
+    # Minimum encoded-resolution multiplier used only when abr_mode = "full"
+    # and a reliable USB TCP headset client supports live stream reconfiguration.
+    dynamic_resolution_min_scale = 0.50
+
+    # Target headset for the per-eye render resolution: "quest2", "quest3", or "avp".
+    # Sets the resolution the runtime renders at (quest2=1440x1584, quest3=1512x1680,
+    # avp=3024x3360 per eye). Use resolution_scale to trim how much of it is streamed.
+    render_device = "quest3"
+
     # Keyframe interval in seconds (1-10). Higher = less bandwidth spikes, slower recovery.
     # Default 2 is a good balance. Use 1 for lossy WiFi, 5+ for USB.
     keyframe_interval_sec = 2
+
+    # Video codec: "h265", "h264", or "auto".
+    video_codec = "h265"
 
     # Encoder speed preset: "quality", "balanced", "speed"
     # speed  = lowest latency, fastest encode, lower quality
@@ -56,21 +78,53 @@ struct OXRSysServerConfig: Equatable {
     # quality  = best visual quality, slightly higher latency
     encoder_preset = "balanced"
 
+    # Encode HEVC Main10 for capable H.265 clients. H.264 remains 8-bit.
+    encoder_10bit = false
+
     # Streaming transport: "auto", "wifi", or "usb_adb".
     transport = "auto"
 
     # Server-side foveated video encoding preset: "off", "light", "medium", or "high".
     foveated_encoding_preset = "off"
 
-    # Headset runtime foveation preset: "off", "light", "medium", or "high".
-    client_foveation_preset = "medium"
+    # Headset client foveation override: "auto", "off", "light", "medium", or "high".
+    # "auto" leaves the headset client unmanaged by Home.
+    client_foveation_preset = "auto"
 
     # Enable Quest shader upscaling after video decode.
     client_upscaling = false
 
+    # Headset contrast-adaptive sharpening strength (0.0-1.0). 0 = off. A little (0.3-0.5)
+    # counteracts encode/upscale softness on the headset.
+    client_sharpening = 0.0
+
+    # Quest client reprojection for short decode/network gaps: "off", "pose", or "pose_warp".
+    client_reprojection = "pose"
+
+    # Adaptive bitrate mode: "off", "bitrate", or "full".
+    # "full" may select live streaming resolution profiles on reliable USB TCP.
+    abr_mode = "bitrate"
+
+    # Enable headset passthrough as a runtime feature.
+    passthrough_enabled = false
+
+    # Advanced MR opt-in: expose OpenXR alpha-blend environment modes to apps.
+    # Keep false for normal VR apps so dark reflective content stays opaque.
+    app_alpha_blend_passthrough = false
+
+    # Occlusion mode: "off", "scene_mesh", or "environment_depth".
+    occlusion_mode = "off"
+
     # Reserved for headset speaker audio. The runtime does not advertise audio until
     # a platform capture/playback path is attached.
     headset_audio = false
+
+    [spatial]
+    # Spatial features stay disabled unless the headset client and runtime path support them.
+    enabled = false
+    anchors = false
+    scene = false
+    persistence = false
 
     [logging]
     # Write server logs to ~/Library/Application Support/OXRSys/oxrsys-runtime.log.
@@ -91,20 +145,29 @@ struct OXRSysServerConfig: Equatable {
            (Self.minBitrateMbps...Self.maxBitrateMbps).contains(value) {
             config.bitrateMbps = value
         }
-        if let value = intValue("fov_degrees", in: text), (60...150).contains(value) {
-            config.fovDegrees = value
-        }
         if let value = intValue("refresh_rate_hz", in: text), supportedRefreshRates.contains(value) {
             config.refreshRateHz = value
         }
         if let value = doubleValue("resolution_scale", in: text), value >= 0.25, value <= 1.0 {
             config.resolutionScale = value
         }
+        if let value = doubleValue("dynamic_resolution_min_scale", in: text), value >= 0.25, value <= 1.0 {
+            config.dynamicResolutionMinScale = value
+        }
+        if let value = stringValue("render_device", in: text), let device = RenderDeviceSetting(rawValue: value) {
+            config.renderDevice = device
+        }
         if let value = intValue("keyframe_interval_sec", in: text), (1...10).contains(value) {
             config.keyframeIntervalSec = value
         }
+        if let value = stringValue("video_codec", in: text), let codec = VideoCodecSetting(rawValue: value) {
+            config.videoCodec = codec
+        }
         if let value = stringValue("encoder_preset", in: text), let preset = EncoderPreset(rawValue: value) {
             config.encoderPreset = preset
+        }
+        if let value = boolValue("encoder_10bit", in: text) {
+            config.encoder10Bit = value
         }
         if let value = stringValue("transport", in: text), let transport = StreamingTransportSetting(rawValue: value) {
             config.transport = transport
@@ -112,14 +175,46 @@ struct OXRSysServerConfig: Equatable {
         if let value = stringValue("foveated_encoding_preset", in: text), let preset = FoveationPresetSetting(rawValue: value) {
             config.foveatedEncodingPreset = preset
         }
-        if let value = stringValue("client_foveation_preset", in: text), let preset = FoveationPresetSetting(rawValue: value) {
+        if let value = stringValue("client_foveation_preset", in: text), let preset = ClientFoveationPresetSetting(rawValue: value) {
             config.clientFoveationPreset = preset
         }
         if let value = boolValue("client_upscaling", in: text) {
             config.clientUpscaling = value
         }
+        if let value = doubleValue("client_sharpening", in: text), value >= 0.0, value <= 1.0 {
+            config.clientSharpening = value
+        }
+        if let value = stringValue("client_reprojection", in: text), let mode = ClientReprojectionSetting(rawValue: value) {
+            config.clientReprojection = mode
+        }
+        if let value = stringValue("abr_mode", in: text), let mode = AbrModeSetting(rawValue: value) {
+            config.abrMode = mode
+        }
+        let legacyMixedRealityMode = stringValue("mixed_reality_mode", in: text)
+        let hasValidLegacyMixedRealityMode = ["off", "passthrough", "alpha"].contains(legacyMixedRealityMode ?? "")
+        let legacyPassthroughEnabled = legacyMixedRealityMode == "passthrough" || legacyMixedRealityMode == "alpha"
+        let legacyAppAlphaBlendPassthrough = legacyMixedRealityMode == "alpha"
+        config.passthroughEnabled = boolValue("passthrough_enabled", in: text) ??
+            (hasValidLegacyMixedRealityMode ? legacyPassthroughEnabled : config.passthroughEnabled)
+        config.appAlphaBlendPassthrough = boolValue("app_alpha_blend_passthrough", in: text) ??
+            (hasValidLegacyMixedRealityMode ? legacyAppAlphaBlendPassthrough : config.appAlphaBlendPassthrough)
+        if let value = stringValue("occlusion_mode", in: text), let mode = OcclusionModeSetting(rawValue: value) {
+            config.occlusionMode = mode
+        }
         if let value = boolValue("headset_audio", in: text) {
             config.headsetAudio = value
+        }
+        if let value = boolValue("enabled", in: text) {
+            config.spatialEnabled = value
+        }
+        if let value = boolValue("anchors", in: text) {
+            config.spatialAnchors = value
+        }
+        if let value = boolValue("scene", in: text) {
+            config.spatialScene = value
+        }
+        if let value = boolValue("persistence", in: text) {
+            config.spatialPersistence = value
         }
         if let value = boolValue("file_logging", in: text) {
             config.fileLogging = value
@@ -136,6 +231,7 @@ struct OXRSysServerConfig: Equatable {
         if text.isEmpty {
             text = Self.defaultText
         }
+        text = removingKeys(Set(["fov_degrees", "mixed_reality_mode"]), fromSection: "streaming", in: text)
 
         let sectionValues: [(name: String, keys: [(key: String, value: String)])] = [
             ("general", [
@@ -143,16 +239,31 @@ struct OXRSysServerConfig: Equatable {
             ]),
             ("streaming", [
                 ("bitrate_mbps", "\(bitrateMbps)"),
-                ("fov_degrees", "\(fovDegrees)"),
                 ("refresh_rate_hz", "\(refreshRateHz)"),
                 ("resolution_scale", decimalString(resolutionScale)),
+                ("dynamic_resolution_min_scale", decimalString(dynamicResolutionMinScale)),
+                ("render_device", "\"\(renderDevice.rawValue)\""),
                 ("keyframe_interval_sec", "\(keyframeIntervalSec)"),
+                ("video_codec", "\"\(videoCodec.rawValue)\""),
                 ("encoder_preset", "\"\(encoderPreset.rawValue)\""),
+                ("encoder_10bit", boolString(encoder10Bit)),
                 ("transport", "\"\(transport.rawValue)\""),
                 ("foveated_encoding_preset", "\"\(foveatedEncodingPreset.rawValue)\""),
                 ("client_foveation_preset", "\"\(clientFoveationPreset.rawValue)\""),
                 ("client_upscaling", boolString(clientUpscaling)),
+                ("client_sharpening", decimalString(clientSharpening)),
+                ("client_reprojection", "\"\(clientReprojection.rawValue)\""),
+                ("abr_mode", "\"\(abrMode.rawValue)\""),
+                ("passthrough_enabled", boolString(passthroughEnabled)),
+                ("app_alpha_blend_passthrough", boolString(appAlphaBlendPassthrough)),
+                ("occlusion_mode", "\"\(occlusionMode.rawValue)\""),
                 ("headset_audio", boolString(headsetAudio)),
+            ]),
+            ("spatial", [
+                ("enabled", boolString(spatialEnabled)),
+                ("anchors", boolString(spatialAnchors)),
+                ("scene", boolString(spatialScene)),
+                ("persistence", boolString(spatialPersistence)),
             ]),
             ("logging", [
                 ("file_logging", boolString(fileLogging)),
@@ -263,6 +374,34 @@ private func upsertingSection(_ sectionName: String, keys: [(key: String, value:
     }
 
     return lines.joined(separator: "\n")
+}
+
+private func removingKeys(_ keys: Set<String>, fromSection sectionName: String, in text: String) -> String {
+    let lines = text.components(separatedBy: .newlines)
+    let sectionHeader = "[\(sectionName)]"
+    guard let sectionIndex = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == sectionHeader }) else {
+        return text
+    }
+
+    let sectionEnd = ((sectionIndex + 1)..<lines.count).first(where: { isSectionHeader(lines[$0]) }) ?? lines.count
+    var indexesToRemove = Set<Int>()
+    for index in (sectionIndex + 1)..<sectionEnd where keys.contains(where: { matchesKey($0, line: lines[index]) }) {
+        indexesToRemove.insert(index)
+        let previousIndex = index - 1
+        if previousIndex > sectionIndex, lines[previousIndex].contains("Rendering FOV") {
+            indexesToRemove.insert(previousIndex)
+        }
+    }
+
+    var filtered: [String] = []
+    filtered.reserveCapacity(lines.count)
+    for (index, line) in lines.enumerated() {
+        if indexesToRemove.contains(index) {
+            continue
+        }
+        filtered.append(line)
+    }
+    return filtered.joined(separator: "\n")
 }
 
 private func isSectionHeader(_ line: String) -> Bool {

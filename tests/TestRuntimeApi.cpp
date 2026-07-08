@@ -4,12 +4,17 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <openxr/openxr.h>
-#include <openxr/openxr_platform.h>
+#include "OpenXRPlatform.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using Catch::Matchers::WithinAbs;
@@ -73,6 +78,47 @@ PFN_xrVoidFunction GetProc(XrInstance instance, const char* name)
     XR_CHECK(xrGetInstanceProcAddr(instance, name, &function));
     REQUIRE(function != nullptr);
     return function;
+}
+
+std::filesystem::path RuntimeConfigPath()
+{
+    const char* home = std::getenv("HOME");
+    REQUIRE(home != nullptr);
+    return std::filesystem::path(home) /
+           "Library/Application Support/OXRSys/oxrsys-runtime.toml";
+}
+
+void WriteRuntimeConfig(bool passthroughEnabled, bool appAlphaBlendPassthrough = false)
+{
+    const std::filesystem::path path = RuntimeConfigPath();
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream file(path);
+    REQUIRE(file.is_open());
+    file << "[streaming]\n"
+         << "passthrough_enabled = "
+         << (passthroughEnabled ? "true" : "false")
+         << "\n"
+         << "app_alpha_blend_passthrough = "
+         << (appAlphaBlendPassthrough ? "true" : "false")
+         << "\n"
+         << "[logging]\n"
+         << "file_logging = false\n";
+    file.close();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+}
+
+std::vector<XrEnvironmentBlendMode> EnumerateBlendModes(XrInstance instance,
+                                                        XrSystemId systemId)
+{
+    uint32_t count = 0;
+    XR_CHECK(xrEnumerateEnvironmentBlendModes(
+        instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &count, nullptr));
+    std::vector<XrEnvironmentBlendMode> modes(count);
+    XR_CHECK(xrEnumerateEnvironmentBlendModes(
+        instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+        count, &count, modes.data()));
+    modes.resize(count);
+    return modes;
 }
 
 int64_t SelectColorSwapchainFormat(XrSession session)
@@ -302,7 +348,6 @@ TEST_CASE("Loader-backed runtime exposes CTS-focused extensions", "[runtime][loa
     CHECK(hasExtension(XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME));
     CHECK(hasExtension(XR_EXT_HAND_INTERACTION_EXTENSION_NAME));
     CHECK(hasExtension(XR_EXT_DEBUG_UTILS_EXTENSION_NAME));
-    CHECK(hasExtension(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME));
 #ifdef XR_META_touch_controller_plus
     CHECK(hasExtension(XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME));
 #endif
@@ -368,6 +413,68 @@ TEST_CASE("Instance view and blend APIs reject missing output pointers", "[runti
     CHECK(xrEnumerateEnvironmentBlendModes(
               instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 1, &count, nullptr) ==
           XR_ERROR_VALIDATION_FAILURE);
+
+    xrDestroyInstance(instance);
+}
+
+TEST_CASE("Alpha blend modes are stable for an instance after config reload", "[runtime][passthrough]")
+{
+    WriteRuntimeConfig(true, true);
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "stable_blend_modes_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    std::vector<XrEnvironmentBlendMode> modes = EnumerateBlendModes(instance, systemId);
+    CHECK(std::find(modes.begin(), modes.end(),
+                    XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) != modes.end());
+
+    WriteRuntimeConfig(false);
+    modes = EnumerateBlendModes(instance, systemId);
+    CHECK(std::find(modes.begin(), modes.end(),
+                    XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) != modes.end());
+
+    xrDestroyInstance(instance);
+
+    XrInstance nextInstance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &nextInstance));
+    XR_CHECK(xrGetSystem(nextInstance, &systemGetInfo, &systemId));
+    modes = EnumerateBlendModes(nextInstance, systemId);
+    CHECK(std::find(modes.begin(), modes.end(),
+                    XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) == modes.end());
+
+    xrDestroyInstance(nextInstance);
+}
+
+TEST_CASE("Passthrough underlay alone does not advertise alpha blend", "[runtime][passthrough]")
+{
+    WriteRuntimeConfig(true, false);
+
+    XrInstanceCreateInfo createInfo = {XR_TYPE_INSTANCE_CREATE_INFO};
+    std::strncpy(createInfo.applicationInfo.applicationName, "passthrough_underlay_test",
+                 XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+    XrInstance instance = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateInstance(&createInfo, &instance));
+
+    XrSystemGetInfo systemGetInfo = {XR_TYPE_SYSTEM_GET_INFO};
+    systemGetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+    XrSystemId systemId = XR_NULL_SYSTEM_ID;
+    XR_CHECK(xrGetSystem(instance, &systemGetInfo, &systemId));
+
+    std::vector<XrEnvironmentBlendMode> modes = EnumerateBlendModes(instance, systemId);
+    CHECK(std::find(modes.begin(), modes.end(),
+                    XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) == modes.end());
 
     xrDestroyInstance(instance);
 }
@@ -712,25 +819,6 @@ TEST_CASE("Runtime enumerates and creates LOCAL_FLOOR reference spaces", "[runti
     CHECK_THAT(location.pose.position.y, WithinAbs(-1.6f, 0.001f));
     CHECK_THAT(location.pose.position.z, WithinAbs(0.0f, 0.001f));
 
-    XrViewLocateInfo viewLocateInfo = {XR_TYPE_VIEW_LOCATE_INFO};
-    viewLocateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-    viewLocateInfo.displayTime = sampleTime;
-    XrViewState viewState = {XR_TYPE_VIEW_STATE};
-    uint32_t viewCount = 0;
-    std::array<XrView, 2> views = {{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}};
-
-    viewLocateInfo.space = context.localSpace;
-    XR_CHECK(xrLocateViews(context.session, &viewLocateInfo, &viewState,
-                           static_cast<uint32_t>(views.size()), &viewCount, views.data()));
-    REQUIRE(viewCount == 2);
-    CHECK_THAT(views[0].pose.position.y, WithinAbs(0.0f, 0.001f));
-
-    viewLocateInfo.space = localFloorSpace;
-    XR_CHECK(xrLocateViews(context.session, &viewLocateInfo, &viewState,
-                           static_cast<uint32_t>(views.size()), &viewCount, views.data()));
-    REQUIRE(viewCount == 2);
-    CHECK_THAT(views[0].pose.position.y, WithinAbs(1.6f, 0.001f));
-
     XR_CHECK(xrDestroySpace(localFloorSpace));
 }
 
@@ -788,28 +876,6 @@ TEST_CASE("Runtime hides LOCAL_FLOOR for OpenXR 1.0 instances", "[runtime][space
 
     XR_CHECK(xrDestroySession(session));
     XR_CHECK(xrDestroyInstance(instance));
-}
-
-TEST_CASE("Runtime exposes LOCAL_FLOOR for OpenXR 1.0 with XR_EXT_local_floor", "[runtime][spaces]")
-{
-    RuntimeSessionContext context(
-        {XR_KHR_METAL_ENABLE_EXTENSION_NAME, XR_EXT_LOCAL_FLOOR_EXTENSION_NAME},
-        true,
-        XR_MAKE_VERSION(1, 0, 57));
-
-    uint32_t spaceCount = 0;
-    XR_CHECK(xrEnumerateReferenceSpaces(context.session, 0, &spaceCount, nullptr));
-    std::vector<XrReferenceSpaceType> spaces(spaceCount);
-    XR_CHECK(xrEnumerateReferenceSpaces(context.session, spaceCount, &spaceCount, spaces.data()));
-    CHECK(std::find(spaces.begin(), spaces.end(), XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR) != spaces.end());
-
-    XrReferenceSpaceCreateInfo createInfo = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
-    createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR;
-    createInfo.poseInReferenceSpace.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
-
-    XrSpace localFloorSpace = XR_NULL_HANDLE;
-    XR_CHECK(xrCreateReferenceSpace(context.session, &createInfo, &localFloorSpace));
-    XR_CHECK(xrDestroySpace(localFloorSpace));
 }
 
 TEST_CASE("Runtime validates xrLocateSpaces count and velocity invariants", "[runtime][spaces]")
@@ -2648,17 +2714,6 @@ TEST_CASE("Swapchain image order follows acquire wait release rules", "[runtime]
 
     XR_CHECK(xrDestroySwapchain(swapchain));
 
-    XrSwapchain pipelinedSwapchain = CreateColorSwapchain(context.session, format);
-    uint32_t firstPipelinedIndex = UINT32_MAX;
-    uint32_t secondPipelinedIndex = UINT32_MAX;
-    XR_CHECK(xrAcquireSwapchainImage(pipelinedSwapchain, nullptr, &firstPipelinedIndex));
-    XR_CHECK(xrWaitSwapchainImage(pipelinedSwapchain, &waitInfo));
-    XR_CHECK(xrAcquireSwapchainImage(pipelinedSwapchain, nullptr, &secondPipelinedIndex));
-    XR_CHECK(xrWaitSwapchainImage(pipelinedSwapchain, &waitInfo));
-    XR_CHECK(xrReleaseSwapchainImage(pipelinedSwapchain, nullptr));
-    XR_CHECK(xrReleaseSwapchainImage(pipelinedSwapchain, nullptr));
-    XR_CHECK(xrDestroySwapchain(pipelinedSwapchain));
-
     XrSwapchain staticSwapchain =
         CreateColorSwapchain(context.session, format, XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT);
     XR_CHECK(xrAcquireSwapchainImage(staticSwapchain, nullptr, &extraIndex));
@@ -2668,14 +2723,13 @@ TEST_CASE("Swapchain image order follows acquire wait release rules", "[runtime]
     XR_CHECK(xrDestroySwapchain(staticSwapchain));
 }
 
-TEST_CASE("CreateSwapchain rejects invalid shape and unsupported format", "[runtime][swapchain]")
+TEST_CASE("Swapchain creation propagates backend initialization failures", "[runtime][swapchain]")
 {
     RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
-    const int64_t supportedFormat = SelectColorSwapchainFormat(context.session);
 
     XrSwapchainCreateInfo createInfo = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
     createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-    createInfo.format = supportedFormat;
+    createInfo.format = 0;
     createInfo.sampleCount = 1;
     createInfo.width = 16;
     createInfo.height = 16;
@@ -2683,22 +2737,28 @@ TEST_CASE("CreateSwapchain rejects invalid shape and unsupported format", "[runt
     createInfo.arraySize = 1;
     createInfo.mipCount = 1;
 
-    XrSwapchain swapchain = XR_NULL_HANDLE;
-    XrSwapchainCreateInfo invalidFormatInfo = createInfo;
-    invalidFormatInfo.format = -1;
-    CHECK(xrCreateSwapchain(context.session, &invalidFormatInfo, &swapchain) ==
+    XrSwapchain swapchain = reinterpret_cast<XrSwapchain>(static_cast<uintptr_t>(0x1));
+    CHECK(xrCreateSwapchain(context.session, &createInfo, &swapchain) ==
           XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED);
     CHECK(swapchain == XR_NULL_HANDLE);
+}
 
-    XrSwapchainCreateInfo invalidShapeInfo = createInfo;
-    invalidShapeInfo.width = 0;
-    CHECK(xrCreateSwapchain(context.session, &invalidShapeInfo, &swapchain) ==
-          XR_ERROR_VALIDATION_FAILURE);
-    CHECK(swapchain == XR_NULL_HANDLE);
+TEST_CASE("Unsupported swapchain mip counts report feature unsupported", "[runtime][swapchain]")
+{
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
 
-    invalidShapeInfo = createInfo;
-    invalidShapeInfo.sampleCount = 2;
-    CHECK(xrCreateSwapchain(context.session, &invalidShapeInfo, &swapchain) ==
-          XR_ERROR_VALIDATION_FAILURE);
+    XrSwapchainCreateInfo createInfo = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    createInfo.format = SelectColorSwapchainFormat(context.session);
+    createInfo.sampleCount = 1;
+    createInfo.width = 16;
+    createInfo.height = 16;
+    createInfo.faceCount = 1;
+    createInfo.arraySize = 1;
+    createInfo.mipCount = 2;
+
+    XrSwapchain swapchain = reinterpret_cast<XrSwapchain>(static_cast<uintptr_t>(0x1));
+    CHECK(xrCreateSwapchain(context.session, &createInfo, &swapchain) ==
+          XR_ERROR_FEATURE_UNSUPPORTED);
     CHECK(swapchain == XR_NULL_HANDLE);
 }

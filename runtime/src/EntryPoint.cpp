@@ -4,14 +4,34 @@
 #include <openxr/openxr_loader_negotiation.h>
 #include <openxr/openxr_reflection.h>
 
+#if defined(_WIN32) && defined(XR_USE_GRAPHICS_API_D3D11)
+#define OXRSYS_USE_D3D11 1
+#endif
+#if defined(_WIN32) && defined(XR_USE_GRAPHICS_API_D3D12)
+#define OXRSYS_USE_D3D12 1
+#endif
+#if defined(__linux__) && defined(XR_USE_GRAPHICS_API_OPENGL)
+#define OXRSYS_USE_OPENGL_XLIB 1
+#endif
+
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
+#if defined(OXRSYS_USE_D3D11)
 #include <d3d11.h>
+#endif
+#if defined(OXRSYS_USE_D3D12)
 #include <d3d12.h>
+#endif
+#if defined(OXRSYS_USE_D3D11) || defined(OXRSYS_USE_D3D12)
 #include <dxgi1_6.h>
 #include <wrl/client.h>
+#endif
 #endif
 
 #ifdef XR_USE_GRAPHICS_API_VULKAN
@@ -20,8 +40,9 @@
 #include <vulkan/vulkan_metal.h>
 #endif
 #endif
-
-#include <openxr/openxr_platform.h>
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+#include <GL/gl.h>
+#endif
 
 #include "Runtime.h"
 #include "Instance.h"
@@ -34,7 +55,6 @@
 #include "Config.h"
 #include "RuntimeStatus.h"
 #include "VulkanDispatch.h"
-#include "VulkanGraphicsContext.h"
 #if defined(_WIN32)
 #include "D3DGraphicsContext.h"
 #endif
@@ -54,12 +74,7 @@
 #include <algorithm>
 #include <cmath>
 
-#if defined(_WIN32) && defined(XR_USE_GRAPHICS_API_D3D11)
-#define OXRSYS_USE_D3D11 1
-#endif
-#if defined(_WIN32) && defined(XR_USE_GRAPHICS_API_D3D12)
-#define OXRSYS_USE_D3D12 1
-#endif
+#include "OpenXRPlatform.h"
 
 // We need to keep ownership of created objects
 static std::unique_ptr<Instance> gInstance;
@@ -160,7 +175,7 @@ static bool EnsureVulkanInstanceDispatch(VkInstance vkInstance, const char* cont
 }
 #endif
 
-#if defined(_WIN32)
+#if defined(OXRSYS_USE_D3D11) || defined(OXRSYS_USE_D3D12)
 static LUID GetDefaultAdapterLuid()
 {
     Microsoft::WRL::ComPtr<IDXGIFactory6> factory6;
@@ -202,7 +217,9 @@ static LUID GetDefaultAdapterLuid()
 
     return {};
 }
+#endif
 
+#if defined(OXRSYS_USE_D3D11)
 static LUID GetAdapterLuidForD3D11Device(ID3D11Device* device)
 {
     if (device == nullptr)
@@ -327,9 +344,6 @@ static std::vector<ExtensionInfo> GetSupportedExtensionInfos()
         {XR_EXT_CONFORMANCE_AUTOMATION_EXTENSION_NAME, XR_EXT_conformance_automation_SPEC_VERSION},
         {XR_EXT_HAND_INTERACTION_EXTENSION_NAME, XR_EXT_hand_interaction_SPEC_VERSION},
         {XR_EXT_DEBUG_UTILS_EXTENSION_NAME, XR_EXT_debug_utils_SPEC_VERSION},
-#ifdef XR_EXT_local_floor
-        {XR_EXT_LOCAL_FLOOR_EXTENSION_NAME, XR_EXT_local_floor_SPEC_VERSION},
-#endif
 #ifdef XR_META_touch_controller_plus
         {XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME, XR_META_touch_controller_plus_SPEC_VERSION},
 #endif
@@ -337,6 +351,9 @@ static std::vector<ExtensionInfo> GetSupportedExtensionInfos()
 #ifdef XR_USE_GRAPHICS_API_VULKAN
     extensions.push_back({XR_KHR_VULKAN_ENABLE_EXTENSION_NAME, XR_KHR_vulkan_enable_SPEC_VERSION});
     extensions.push_back({XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME, XR_KHR_vulkan_enable2_SPEC_VERSION});
+#endif
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+    extensions.push_back({XR_KHR_OPENGL_ENABLE_EXTENSION_NAME, XR_KHR_opengl_enable_SPEC_VERSION});
 #endif
 #ifdef OXRSYS_USE_D3D11
     extensions.push_back({XR_KHR_D3D11_ENABLE_EXTENSION_NAME, XR_KHR_D3D11_enable_SPEC_VERSION});
@@ -425,6 +442,12 @@ static const char* ExtensionForFunctionName(const char* functionName)
         std::strcmp(functionName, "xrGetVulkanGraphicsRequirements2KHR") == 0)
     {
         return XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME;
+    }
+#endif
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+    if (std::strcmp(functionName, "xrGetOpenGLGraphicsRequirementsKHR") == 0)
+    {
+        return XR_KHR_OPENGL_ENABLE_EXTENSION_NAME;
     }
 #endif
 #ifdef OXRSYS_USE_D3D11
@@ -963,6 +986,9 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateSession(
 #ifdef XR_USE_GRAPHICS_API_VULKAN
     const XrGraphicsBindingVulkanKHR* vulkanBinding = nullptr;
 #endif
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+    const XrGraphicsBindingOpenGLXlibKHR* openGLXlibBinding = nullptr;
+#endif
 #ifdef OXRSYS_USE_D3D11
     const XrGraphicsBindingD3D11KHR* d3d11Binding = nullptr;
 #endif
@@ -1000,6 +1026,25 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateSession(
             }
             vulkanBinding = reinterpret_cast<const XrGraphicsBindingVulkanKHR*>(next);
             if (!inst->HasQueriedVulkanGraphicsRequirements())
+            {
+                return XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING;
+            }
+        }
+#endif
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+        if (next->type == XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR)
+        {
+            if (!inst->IsExtensionEnabled(XR_KHR_OPENGL_ENABLE_EXTENSION_NAME))
+            {
+                return XR_ERROR_VALIDATION_FAILURE;
+            }
+            openGLXlibBinding = reinterpret_cast<const XrGraphicsBindingOpenGLXlibKHR*>(next);
+            if (openGLXlibBinding->xDisplay == nullptr ||
+                openGLXlibBinding->glxContext == nullptr)
+            {
+                return XR_ERROR_VALIDATION_FAILURE;
+            }
+            if (!inst->HasQueriedOpenGLGraphicsRequirements())
             {
                 return XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING;
             }
@@ -1074,38 +1119,25 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateSession(
         {
             return XR_ERROR_RUNTIME_FAILURE;
         }
-
+        gGraphicsApi = GraphicsApi::Vulkan;
         VulkanGraphicsContext vulkanContext = {};
-        vulkanContext.instance = vulkanBinding->instance;
-        vulkanContext.physicalDevice = vulkanBinding->physicalDevice;
-        vulkanContext.device = vulkanBinding->device;
+        vulkanContext.instance = reinterpret_cast<void*>(vulkanBinding->instance);
+        vulkanContext.physicalDevice = reinterpret_cast<void*>(vulkanBinding->physicalDevice);
+        vulkanContext.device = reinterpret_cast<void*>(vulkanBinding->device);
         vulkanContext.queueFamilyIndex = vulkanBinding->queueFamilyIndex;
         vulkanContext.queueIndex = vulkanBinding->queueIndex;
-
-        PFN_vkGetDeviceQueue getDeviceQueue = nullptr;
         if (gVulkanDispatch.getDeviceProcAddr != nullptr)
         {
-            getDeviceQueue = reinterpret_cast<PFN_vkGetDeviceQueue>(
-                gVulkanDispatch.getDeviceProcAddr(vulkanContext.device, "vkGetDeviceQueue"));
+            auto getDeviceQueue = reinterpret_cast<PFN_vkGetDeviceQueue>(
+                gVulkanDispatch.getDeviceProcAddr(vulkanBinding->device, "vkGetDeviceQueue"));
+            if (getDeviceQueue != nullptr)
+            {
+                VkQueue queue = VK_NULL_HANDLE;
+                getDeviceQueue(vulkanBinding->device, vulkanBinding->queueFamilyIndex,
+                               vulkanBinding->queueIndex, &queue);
+                vulkanContext.queue = reinterpret_cast<void*>(queue);
+            }
         }
-        if (getDeviceQueue == nullptr)
-        {
-            getDeviceQueue = gVulkanDispatch.getDeviceQueue;
-        }
-        if (getDeviceQueue != nullptr)
-        {
-            getDeviceQueue(vulkanContext.device,
-                           vulkanContext.queueFamilyIndex,
-                           vulkanContext.queueIndex,
-                           &vulkanContext.queue);
-        }
-        if (vulkanContext.queue == VK_NULL_HANDLE)
-        {
-            spdlog::error("OXRSys: Vulkan graphics binding did not provide a resolvable queue");
-            return XR_ERROR_GRAPHICS_DEVICE_INVALID;
-        }
-
-        gGraphicsApi = GraphicsApi::Vulkan;
         gSession = std::make_unique<Session>(
             inst, GraphicsContext::Vulkan(vulkanContext, gMetalDevice));
         *session = reinterpret_cast<XrSession>(gSession->GetHandle());
@@ -1130,7 +1162,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateSession(
         d3d11Context.adapterLuid = GetAdapterLuidForD3D11Device(d3d11Binding->device);
 
         gGraphicsApi = GraphicsApi::D3D11;
-        gSession = std::make_unique<Session>(inst, d3d11Context);
+        gSession = std::make_unique<Session>(inst, GraphicsContext::D3D11(d3d11Context));
         *session = reinterpret_cast<XrSession>(gSession->GetHandle());
         spdlog::info("OXRSys: Session created with D3D11 binding");
         return XR_SUCCESS;
@@ -1146,7 +1178,7 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateSession(
         d3d12Context.adapterLuid = d3d12Binding->device->GetAdapterLuid();
 
         gGraphicsApi = GraphicsApi::D3D12;
-        gSession = std::make_unique<Session>(inst, d3d12Context);
+        gSession = std::make_unique<Session>(inst, GraphicsContext::D3D12(d3d12Context));
         *session = reinterpret_cast<XrSession>(gSession->GetHandle());
         spdlog::info("OXRSys: Session created with D3D12 binding");
         return XR_SUCCESS;
@@ -1160,6 +1192,22 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateSession(
         gSession = std::make_unique<Session>(inst, gMetalDevice, metalBinding->commandQueue);
         *session = reinterpret_cast<XrSession>(gSession->GetHandle());
         spdlog::info("OXRSys: Session created with Metal binding");
+        return XR_SUCCESS;
+    }
+#endif
+
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+    if (openGLXlibBinding)
+    {
+        gGraphicsApi = GraphicsApi::OpenGL;
+        OpenGLGraphicsContext openGLContext = {};
+        openGLContext.display = openGLXlibBinding->xDisplay;
+        openGLContext.drawable = reinterpret_cast<void*>(openGLXlibBinding->glxDrawable);
+        openGLContext.context = openGLXlibBinding->glxContext;
+        openGLContext.visualId = static_cast<uint64_t>(openGLXlibBinding->visualid);
+        gSession = std::make_unique<Session>(inst, GraphicsContext::OpenGL(openGLContext));
+        *session = reinterpret_cast<XrSession>(gSession->GetHandle());
+        spdlog::info("OXRSys: Session created with OpenGL Xlib binding");
         return XR_SUCCESS;
     }
 #endif
@@ -1295,6 +1343,16 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrEnumerateSwapchainFormats(
         130, // VK_FORMAT_D32_SFLOAT_S8_UINT
     };
 #endif
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+    // OpenGL internal formats
+    static const int64_t openGLFormats[] = {
+        GL_SRGB8_ALPHA8,
+        GL_RGBA8,
+        GL_DEPTH_COMPONENT24,
+        GL_DEPTH_COMPONENT32F,
+        GL_DEPTH24_STENCIL8,
+    };
+#endif
 #if defined(OXRSYS_USE_D3D11) || defined(OXRSYS_USE_D3D12)
     static const int64_t d3dFormats[] = {
         DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -1316,6 +1374,13 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrEnumerateSwapchainFormats(
     {
         supportedFormats = vulkanFormats;
         formatCount = sizeof(vulkanFormats) / sizeof(vulkanFormats[0]);
+    }
+#endif
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+    if (gGraphicsApi == GraphicsApi::OpenGL)
+    {
+        supportedFormats = openGLFormats;
+        formatCount = sizeof(openGLFormats) / sizeof(openGLFormats[0]);
     }
 #endif
 #if defined(OXRSYS_USE_D3D11) || defined(OXRSYS_USE_D3D12)
@@ -2179,58 +2244,7 @@ static XrPosef ComposePoses(const XrPosef& basePose, const XrPosef& offsetPose)
 
 static XrPosef ResolveSpaceWorldPose(Space* space)
 {
-    XrPosef worldPose = {};
-    worldPose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
-    worldPose.position = {0.0f, 0.0f, 0.0f};
-
-    const InputManager& inputManager = space->GetSession()->GetInputManager();
-
-    if (space->GetType() == Space::Type::Reference)
-    {
-        switch (space->GetReferenceSpaceType())
-        {
-            case XR_REFERENCE_SPACE_TYPE_VIEW:
-                worldPose = inputManager.GetHeadPose();
-                break;
-
-            case XR_REFERENCE_SPACE_TYPE_LOCAL:
-                worldPose = inputManager.GetLocalSpacePose();
-                break;
-            case XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR:
-            case XR_REFERENCE_SPACE_TYPE_STAGE:
-            default:
-                break;
-        }
-    }
-    else
-    {
-        auto* action = Runtime::Get().FromHandle<ActionState>(
-            reinterpret_cast<uint64_t>(space->GetAction()));
-        std::string poseBindingPath;
-        std::string poseProfilePath;
-        if (action != nullptr)
-        {
-            const auto& data = action->GetSubactionData(space->GetSubactionPath());
-            poseBindingPath = Runtime::Get().GetPathString(data.poseSourcePath);
-            poseProfilePath = data.poseSourceProfile;
-        }
-
-        if (!poseBindingPath.empty())
-        {
-            InputManager::Hand hand = HandFromBindingPath(poseBindingPath);
-            worldPose = inputManager.GetPoseComponentForProfile(
-                hand, ComponentFromBindingPath(poseBindingPath), poseProfilePath);
-        }
-        else
-        {
-            worldPose = inputManager.GetControllerPose(
-                (space->GetSubactionPath() == XR_NULL_PATH) ? InputManager::Hand::Left
-                                                            : HandFromBindingPath(
-                                                                  Runtime::Get().GetPathString(space->GetSubactionPath())));
-        }
-    }
-
-    return ComposePoses(worldPose, space->GetPoseInSpace());
+    return space->ResolveWorldPose();
 }
 
 static XrPath TopLevelPathFromHand(InputManager::Hand hand)
@@ -2292,7 +2306,12 @@ static ActionState::SubactionData GetQueriedActionState(const ActionState* actio
         aggregate.isActive = aggregate.isActive || data.isActive;
         aggregate.boolValue = aggregate.boolValue || data.boolValue;
         aggregate.boolChanged = aggregate.boolChanged || data.boolChanged;
-        aggregate.floatValue = std::max(aggregate.floatValue, data.floatValue);
+        // Magnitude-preserving so bidirectional axes (thumbstick x/y) keep their sign;
+        // identical to max() for one-sided inputs (trigger/grip are always >= 0).
+        if (std::fabs(data.floatValue) > std::fabs(aggregate.floatValue))
+        {
+            aggregate.floatValue = data.floatValue;
+        }
         aggregate.floatChanged = aggregate.floatChanged || data.floatChanged;
         if (std::fabs(data.vector2fValue.x) > std::fabs(aggregate.vector2fValue.x) ||
             std::fabs(data.vector2fValue.y) > std::fabs(aggregate.vector2fValue.y))
@@ -2428,10 +2447,17 @@ static void AccumulateBindingState(const InputManager& inputManager, const Sugge
             break;
 
         case XR_ACTION_TYPE_FLOAT_INPUT:
-            aggregate.floatValue = std::max(aggregate.floatValue,
-                                            inputManager.GetFloatComponentForProfile(
-                                                hand, binding.componentPath, binding.profilePathString));
+        {
+            // Magnitude-preserving so bidirectional axes keep their sign (max() would clamp
+            // negative thumbstick deflection to 0). One-sided inputs are unaffected.
+            const float floatComponent = inputManager.GetFloatComponentForProfile(
+                hand, binding.componentPath, binding.profilePathString);
+            if (std::fabs(floatComponent) > std::fabs(aggregate.floatValue))
+            {
+                aggregate.floatValue = floatComponent;
+            }
             break;
+        }
 
         case XR_ACTION_TYPE_VECTOR2F_INPUT:
         {
@@ -3834,6 +3860,45 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetD3D12GraphicsRequirementsKHR(
 #endif
 
 // ============================================================================
+// OpenGL extension (XR_KHR_opengl_enable, Linux GLX/Xlib)
+// ============================================================================
+
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+
+static XRAPI_ATTR XrResult XRAPI_CALL OxrGetOpenGLGraphicsRequirementsKHR(
+    XrInstance instance, XrSystemId systemId,
+    XrGraphicsRequirementsOpenGLKHR* graphicsRequirements)
+{
+    auto* inst = GetInstance(instance);
+    if (!inst)
+    {
+        return XR_ERROR_HANDLE_INVALID;
+    }
+    if (systemId != 1)
+    {
+        return XR_ERROR_SYSTEM_INVALID;
+    }
+    if (graphicsRequirements == nullptr)
+    {
+        return XR_ERROR_VALIDATION_FAILURE;
+    }
+    if (!inst->IsExtensionEnabled(XR_KHR_OPENGL_ENABLE_EXTENSION_NAME))
+    {
+        return XR_ERROR_FUNCTION_UNSUPPORTED;
+    }
+
+    graphicsRequirements->type = XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR;
+    graphicsRequirements->minApiVersionSupported = XR_MAKE_VERSION(3, 3, 0);
+    graphicsRequirements->maxApiVersionSupported = XR_MAKE_VERSION(4, 6, 0);
+    inst->MarkOpenGLGraphicsRequirementsQueried();
+
+    spdlog::info("OXRSys: OpenGL graphics requirements provided");
+    return XR_SUCCESS;
+}
+
+#endif // XR_USE_GRAPHICS_API_OPENGL
+
+// ============================================================================
 // Metal extension
 // ============================================================================
 
@@ -4045,6 +4110,10 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetInstanceProcAddr(
     DISPATCH(xrCreateVulkanDeviceKHR, OxrCreateVulkanDeviceKHR)
     DISPATCH(xrGetVulkanGraphicsDevice2KHR, OxrGetVulkanGraphicsDevice2KHR)
     DISPATCH(xrGetVulkanGraphicsRequirements2KHR, OxrGetVulkanGraphicsRequirements2KHR)
+#endif
+
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+    DISPATCH(xrGetOpenGLGraphicsRequirementsKHR, OxrGetOpenGLGraphicsRequirementsKHR)
 #endif
 
 #ifdef OXRSYS_USE_D3D11

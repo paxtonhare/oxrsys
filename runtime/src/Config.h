@@ -15,22 +15,40 @@ struct ConfigValues
 {
     bool runtimeEnabled = true;     // Allow this runtime to accept xrCreateInstance
     uint32_t bitrateMbps = 50;      // H.265 encoding bitrate in Mbps
-    uint32_t fovDegrees = 100;      // Rendering FOV in degrees (symmetric)
+    uint32_t fovDegrees = 100;      // Legacy fallback FOV when a client omits eyeFov
     uint32_t refreshRateHz = 72;    // Preferred headset refresh rate
     float resolutionScale = 0.75f;  // Encode resolution multiplier (0.25-1.0)
+    float dynamicResolutionMinScale = 0.50f; // Lowest ABR full-mode encode scale
+    std::string renderDevice = "quest3"; // Per-eye render resolution target: "quest2", "quest3", "avp"
     uint32_t keyframeIntervalSec = 2; // Seconds between forced keyframes
+    std::string videoCodec = "h265"; // "h265", "h264", "auto"
     std::string encoderPreset = "balanced"; // "quality", "balanced", "speed"
+    bool encoder10Bit = false;      // Encode HEVC Main10 for capable H.265 clients
     std::string streamingTransport = "auto"; // "auto", "wifi", "usb_adb"
     std::string foveatedEncodingPreset = "off"; // "off", "light", "medium", "high"
-    std::string clientFoveationPreset = "medium"; // "off", "light", "medium", "high"
+    std::string clientFoveationPreset = "auto"; // "auto", "off", "light", "medium", "high"
     bool clientUpscaling = false;    // Enable Quest shader upscaling
+    float clientSharpening = 0.0f;   // Headset contrast-adaptive sharpen strength (0.0-1.0); 0 = off
+    std::string clientReprojectionMode = "pose"; // "off", "pose", "pose_warp"
+    std::string abrMode = "bitrate"; // "off", "bitrate", "full"
+    bool passthroughEnabled = false;  // Keep headset passthrough available for streaming
+    bool appAlphaBlendPassthrough = false; // Advertise OpenXR alpha blend for explicit MR apps
+    std::string occlusionMode = "off"; // "off", "scene_mesh", "environment_depth"
     bool headsetAudio = false;       // Stream server audio to the headset
+
+    bool spatialEnabled = false;
+    bool spatialAnchors = false;
+    bool spatialScene = false;
+    bool spatialPersistence = false;
 
     bool fileLogging = true;        // Write logs to oxrsys-runtime.log
     bool questLogcat = false;       // Capture Quest logcat to oxrsys-headset.log
 };
 
 ConfigValues ParseConfigToml(std::istream& input, const ConfigValues& defaults = {});
+
+// Per-eye render resolution for the configured `render_device`, advertised to the app.
+void RenderBaseEyeResolution(uint32_t& width, uint32_t& height);
 
 /**
  * Runtime configuration loaded from the platform config directory

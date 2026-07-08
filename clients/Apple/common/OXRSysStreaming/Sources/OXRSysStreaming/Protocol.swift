@@ -11,12 +11,14 @@ public enum OXRProtocol {
     public static let trackingPort: UInt16 = 9945
     public static let controlPort: UInt16 = 9946
     public static let audioPort: UInt16 = 9947
+    public static let spatialPort: UInt16 = 9948
     public static let handJointCount: Int = 26
     public static let streamingMinBitrateMbps: UInt32 = 1
     public static let streamingMaxBitrateMbps: UInt32 = 200
     public static let clientMaxBitrateUseServerConfig: UInt32 = 0
     public static let serverAnnounceBaseSize: Int = 92
     public static let clientConnectBaseSize: Int = 80
+    public static let latencyReportBaseSize: Int = 20
     public static let maxPacketPayload: Int = 1400
     public static let tcpRecordMagic: UInt32 = 0x4f585255
     public static let tcpRecordVersion: UInt16 = 1
@@ -38,6 +40,7 @@ public enum TcpRecordType: UInt16, Sendable {
     case control = 0x0006
     case disconnect = 0x0007
     case audio = 0x0008
+    case spatial = 0x0009
 }
 
 public struct TcpRecordHeader: Sendable {
@@ -93,9 +96,16 @@ public enum MessageType: UInt8, Sendable {
 
 public struct ServerFeatureFlags {
     public static let foveatedEncoding: UInt32 = 0x00000001
+    // clientFoveationPreset is an explicit headset-client override.
     public static let clientFoveation: UInt32 = 0x00000002
     public static let clientUpscaling: UInt32 = 0x00000004
     public static let headsetAudio: UInt32 = 0x00000008
+    public static let streamReconfigure: UInt32 = 0x00000010
+    public static let mixedRealityPassthrough: UInt32 = 0x00000020
+    public static let mixedRealityAlpha: UInt32 = 0x00000040
+    public static let depthOcclusion: UInt32 = 0x00000080
+    public static let spatialEntity: UInt32 = 0x00000100
+    public static let sceneCapture: UInt32 = 0x00000200
 }
 
 public struct ClientCapabilityFlags {
@@ -103,6 +113,13 @@ public struct ClientCapabilityFlags {
     public static let clientFoveation: UInt32 = 0x00000002
     public static let clientUpscaling: UInt32 = 0x00000004
     public static let audioOutput: UInt32 = 0x00000008
+    public static let streamReconfigure: UInt32 = 0x00000010
+    public static let mixedRealityPassthrough: UInt32 = 0x00000020
+    public static let mixedRealityAlpha: UInt32 = 0x00000040
+    public static let depthOcclusion: UInt32 = 0x00000080
+    public static let spatialEntity: UInt32 = 0x00000100
+    public static let sceneCapture: UInt32 = 0x00000200
+    public static let tenBitEncoding: UInt32 = 0x00000400
 }
 
 public enum FoveationPreset: UInt32, Sendable {
@@ -122,6 +139,12 @@ public enum ClientFoveationPreset: UInt32, Sendable {
 public enum ClientUpscalingMode: UInt32, Sendable {
     case off = 0
     case snapdragonGsr = 1
+}
+
+public enum ClientReprojectionMode: UInt32, Sendable {
+    case off = 0
+    case pose = 1
+    case poseWarp = 2
 }
 
 public enum AudioSampleFormat: UInt16, Sendable {
@@ -161,6 +184,7 @@ public struct ServerAnnounce: Sendable {
     public var foveatedEncodingPreset: UInt32 = FoveationPreset.off.rawValue
     public var clientFoveationPreset: UInt32 = ClientFoveationPreset.off.rawValue
     public var clientUpscalingMode: UInt32 = ClientUpscalingMode.off.rawValue
+    public var clientReprojectionMode: UInt32 = ClientReprojectionMode.pose.rawValue
     public var audioSampleRateHz: UInt32 = 48000
     public var foveationCenterSizeX: Float = 0
     public var foveationCenterSizeY: Float = 0
@@ -168,6 +192,8 @@ public struct ServerAnnounce: Sendable {
     public var foveationCenterShiftY: Float = 0
     public var foveationEdgeRatioX: Float = 1
     public var foveationEdgeRatioY: Float = 1
+    public var spatialPort: UInt32 = UInt32(OXRProtocol.spatialPort)
+    public var clientSharpeningPercent: UInt32 = 0 // 0-100; headset contrast-adaptive sharpen strength
 
     public init() {}
 
@@ -185,7 +211,7 @@ public struct ClientConnect: Sendable {
     public var versionMajor: UInt8 = 1
     public var versionMinor: UInt8 = 0
     public var reserved: UInt8 = 0
-    public var preferredCodec: UInt32 = 0 // H265
+    public var preferredCodec: UInt32 = VideoCodec.h265.rawValue
     public var maxBitrateMbps: UInt32 = OXRProtocol.clientMaxBitrateUseServerConfig
     public var refreshRateHz: UInt32 = 0
     public var deviceName: (
@@ -205,7 +231,7 @@ public struct ClientConnect: Sendable {
     )
     public var clientCapabilities: UInt32 = 0
     public var audioSampleRateHz: UInt32 = 48000
-    public var reserved2: UInt32 = 0
+    public var supportedCodecs: UInt32 = 0 // 0 means legacy H.265-only
     public var reserved3: UInt32 = 0
 
     public init() {}
@@ -230,6 +256,12 @@ public enum VideoCodec: UInt32, Sendable {
     case av1 = 2
 }
 
+public struct ClientCodecCapability {
+    public static let h265: UInt32 = 0x00000001
+    public static let h264: UInt32 = 0x00000002
+    public static let av1: UInt32 = 0x00000004
+}
+
 public struct VideoPacketHeader: Sendable {
     public var frameIndex: UInt32 = 0
     public var packetIndex: UInt16 = 0
@@ -252,6 +284,7 @@ public struct VideoFlags {
     public static let stereo: UInt8 = 0x0C
     public static let fec: UInt8 = 0x10
     public static let renderPose: UInt8 = 0x20
+    public static let alphaBlend: UInt8 = 0x40
 }
 
 public struct AudioPacketHeader: Sendable {
@@ -380,6 +413,20 @@ public enum ControlType: UInt8, Sendable {
     case requestKeyframe = 0x83
     case haptics = 0x84
     case nackRequest = 0x85
+    case streamConfigUpdate = 0x86
+    case streamConfigAck = 0x87
+}
+
+public struct StreamConfigUpdateFlags {
+    public static let reconfigureDecoder: UInt32 = 0x00000001
+    public static let forceKeyframe: UInt32 = 0x00000002
+    public static let foveatedEncoding: UInt32 = 0x00000004
+    public static let clientUpscaling: UInt32 = 0x00000008
+}
+
+public struct StreamConfigAckStatus {
+    public static let ok: UInt8 = 0
+    public static let rejected: UInt8 = 1
 }
 
 public struct NackRequest: Sendable {
@@ -400,6 +447,11 @@ public struct LatencyReport: Sendable {
     public var decodeLatencyMs: Float = 0
     public var compositorLatencyMs: Float = 0
     public var totalClientLatencyMs: Float = 0
+    public var displayedFrameAgeMs: Float = 0
+    public var reprojectedFrames: UInt32 = 0
+    public var staleFrameReuses: UInt32 = 0
+    public var renderPoseFallbacks: UInt32 = 0
+    public var reprojectionMode: UInt32 = ClientReprojectionMode.off.rawValue
 
     public init() {}
 }
@@ -420,6 +472,40 @@ public struct HapticsCommand: Sendable {
     public var amplitude: Float = 0
     public var durationMs: Float = 0
     public var frequency: Float = 0
+
+    public init() {}
+}
+
+public struct StreamConfigUpdate: Sendable {
+    public var type: UInt8 = ControlType.streamConfigUpdate.rawValue
+    public var reserved: (UInt8, UInt8, UInt8) = (0, 0, 0)
+    public var sequence: UInt32 = 0
+    public var renderWidth: UInt32 = 0
+    public var renderHeight: UInt32 = 0
+    public var encodedWidth: UInt32 = 0
+    public var encodedHeight: UInt32 = 0
+    public var targetBitrateMbps: UInt32 = 0
+    public var refreshRateHz: UInt32 = 0
+    public var flags: UInt32 = 0
+    public var foveatedEncodingPreset: UInt32 = FoveationPreset.off.rawValue
+    public var clientUpscalingMode: UInt32 = ClientUpscalingMode.off.rawValue
+    public var foveationCenterSizeX: Float = 0
+    public var foveationCenterSizeY: Float = 0
+    public var foveationCenterShiftX: Float = 0
+    public var foveationCenterShiftY: Float = 0
+    public var foveationEdgeRatioX: Float = 1
+    public var foveationEdgeRatioY: Float = 1
+
+    public init() {}
+}
+
+public struct StreamConfigAck: Sendable {
+    public var type: UInt8 = ControlType.streamConfigAck.rawValue
+    public var status: UInt8 = StreamConfigAckStatus.ok
+    public var reserved: (UInt8, UInt8) = (0, 0)
+    public var sequence: UInt32 = 0
+    public var encodedWidth: UInt32 = 0
+    public var encodedHeight: UInt32 = 0
 
     public init() {}
 }

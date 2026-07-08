@@ -146,14 +146,32 @@ void WriteStreamingStats(std::ofstream& file, const RuntimeStatus::StreamingStat
     file << "    \"refresh_rate_hz\": " << stats.refreshRateHz << ",\n";
     file << "    \"current_bitrate_mbps\": " << stats.currentBitrateMbps << ",\n";
     file << "    \"max_bitrate_mbps\": " << stats.maxBitrateMbps << ",\n";
+    file << "    \"configured_bitrate_mbps\": " << stats.configuredBitrateMbps << ",\n";
     file << "    \"render_width\": " << stats.renderWidth << ",\n";
     file << "    \"render_height\": " << stats.renderHeight << ",\n";
     file << "    \"encoded_width\": " << stats.encodedWidth << ",\n";
     file << "    \"encoded_height\": " << stats.encodedHeight << ",\n";
+    file << "    \"video_codec\": \"" << JsonEscape(stats.videoCodec) << "\",\n";
     file << "    \"encoder_preset\": \"" << JsonEscape(stats.encoderPreset) << "\",\n";
     file << "    \"foveated_encoding_preset\": \"" << JsonEscape(stats.foveatedEncodingPreset) << "\",\n";
+    file << "    \"foveated_encoding_requested_preset\": \"" << JsonEscape(stats.foveatedEncodingRequestedPreset) << "\",\n";
+    file << "    \"foveated_encoding_status\": \"" << JsonEscape(stats.foveatedEncodingStatus) << "\",\n";
+    file << "    \"foveated_encoding_active\": " << (stats.foveatedEncodingActive ? "true" : "false") << ",\n";
     file << "    \"client_foveation_preset\": \"" << JsonEscape(stats.clientFoveationPreset) << "\",\n";
     file << "    \"client_upscaling\": " << (stats.clientUpscaling ? "true" : "false") << ",\n";
+    file << "    \"client_reprojection_mode\": \"" << JsonEscape(stats.clientReprojectionMode) << "\",\n";
+    file << "    \"abr_mode\": \"" << JsonEscape(stats.abrMode) << "\",\n";
+    file << "    \"abr_state\": \"" << JsonEscape(stats.abrState) << "\",\n";
+    file << "    \"abr_profile\": \"" << JsonEscape(stats.abrProfile) << "\",\n";
+    file << "    \"resolution_scale\": " << stats.resolutionScale << ",\n";
+    file << "    \"dynamic_resolution_min_scale\": " << stats.dynamicResolutionMinScale << ",\n";
+    file << "    \"stream_reconfigure\": " << (stats.streamReconfigure ? "true" : "false") << ",\n";
+    file << "    \"stream_config_sequence\": " << stats.streamConfigSequence << ",\n";
+    file << "    \"passthrough_enabled\": " << (stats.passthroughEnabled ? "true" : "false") << ",\n";
+    file << "    \"passthrough_supported\": " << (stats.passthroughSupported ? "true" : "false") << ",\n";
+    file << "    \"passthrough_ready\": " << (stats.passthroughReady ? "true" : "false") << ",\n";
+    file << "    \"occlusion_mode\": \"" << JsonEscape(stats.occlusionMode) << "\",\n";
+    file << "    \"spatial_enabled\": " << (stats.spatialEnabled ? "true" : "false") << ",\n";
     file << "    \"headset_audio\": " << (stats.headsetAudio ? "true" : "false") << ",\n";
     file << "    \"latency_ms\": {\n";
     file << "      \"server_pipeline\": " << stats.serverPipelineLatencyMs << ",\n";
@@ -161,7 +179,8 @@ void WriteStreamingStats(std::ofstream& file, const RuntimeStatus::StreamingStat
     file << "      \"client_receive_to_submit\": " << stats.clientReceiveToSubmitMs << ",\n";
     file << "      \"client_decode\": " << stats.clientDecodeMs << ",\n";
     file << "      \"client_compositor\": " << stats.clientCompositorMs << ",\n";
-    file << "      \"prediction_horizon\": " << stats.predictionHorizonMs << "\n";
+    file << "      \"prediction_horizon\": " << stats.predictionHorizonMs << ",\n";
+    file << "      \"displayed_frame_age\": " << stats.displayedFrameAgeMs << "\n";
     file << "    },\n";
     file << "    \"encode_ms\": {\n";
     file << "      \"queue_avg\": " << stats.encodeQueueAverageMs << ",\n";
@@ -180,7 +199,17 @@ void WriteStreamingStats(std::ofstream& file, const RuntimeStatus::StreamingStat
     file << "      \"encoder_dropped_frames_total\": " << stats.encoderDroppedFramesTotal << ",\n";
     file << "      \"replaced_frames_delta\": " << stats.replacedFramesDelta << ",\n";
     file << "      \"keyframe_requests_delta\": " << stats.keyframeRequestsDelta << ",\n";
-    file << "      \"pending_depth_max\": " << stats.pendingDepthMax << "\n";
+    file << "      \"pending_depth_max\": " << stats.pendingDepthMax << ",\n";
+    file << "      \"video_send_queue_depth_max\": " << stats.videoSendQueueDepthMax << ",\n";
+    file << "      \"video_send_dropped_frames_delta\": "
+         << stats.videoSendDroppedFramesDelta << ",\n";
+    file << "      \"video_tcp_send_failures_delta\": "
+         << stats.videoTcpSendFailuresDelta << ",\n";
+    file << "      \"video_udp_retransmitted_packets_delta\": "
+         << stats.videoUdpRetransmittedPacketsDelta << ",\n";
+    file << "      \"reprojected_frames_delta\": " << stats.reprojectedFramesDelta << ",\n";
+    file << "      \"stale_frame_reuses_delta\": " << stats.staleFrameReusesDelta << ",\n";
+    file << "      \"render_pose_fallbacks_delta\": " << stats.renderPoseFallbacksDelta << "\n";
     file << "    }\n";
     file << "  }\n";
 }

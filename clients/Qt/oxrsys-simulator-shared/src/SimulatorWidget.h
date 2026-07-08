@@ -24,6 +24,7 @@ struct SwsContext;
 
 class QLabel;
 class QPushButton;
+class QSlider;
 class QTimer;
 class QUdpSocket;
 class SimulatorPreviewWidget;
@@ -75,6 +76,7 @@ private:
     void updatePreviewStatus();
     void advanceSimulation(float deltaTime);
     void fillTrackingPacket(oxr::protocol::TrackingPacket& packet) const;
+    float simulatorPerEyeAspect() const;
     bool startVideoReceiver();
     void stopVideoReceiver();
     void handleVideoPacket(const oxr::protocol::VideoPacketHeader& header,
@@ -88,7 +90,7 @@ private:
                            int64_t decodeEndNs);
     int64_t monotonicNowNs() const;
 #if OXRSYS_QT_SIMULATOR_HAS_FFMPEG
-    bool ensureVideoDecoder();
+    bool ensureVideoDecoder(oxr::protocol::VideoCodec codec);
     void resetVideoDecoder();
     bool decodeVideoFrame(const AssembledVideoFrame& frame);
 #endif
@@ -103,11 +105,13 @@ private:
     QLabel* statusLabel_ = nullptr;
     QLabel* serverLabel_ = nullptr;
     QLabel* telemetryLabel_ = nullptr;
+    QLabel* simulatorFovValueLabel_ = nullptr;
     QLabel* hintLabel_ = nullptr;
     SimulatorPreviewWidget* previewWidget_ = nullptr;
     QPushButton* searchButton_ = nullptr;
     QPushButton* connectButton_ = nullptr;
     QPushButton* disconnectButton_ = nullptr;
+    QSlider* simulatorFovSlider_ = nullptr;
     QUdpSocket* discoverySocket_ = nullptr;
     QUdpSocket* videoSocket_ = nullptr;
     QUdpSocket* controlSocket_ = nullptr;
@@ -131,6 +135,7 @@ private:
     AVFrame* decodedFrame_ = nullptr;
     AVPacket* decodePacket_ = nullptr;
     SwsContext* swsContext_ = nullptr;
+    oxr::protocol::VideoCodec decoderCodec_ = oxr::protocol::VideoCodec::H265;
 #endif
     QElapsedTimer poseClock_;
     QSet<int> pressedKeys_;
@@ -138,5 +143,6 @@ private:
     QPointF pendingMouseDelta_;
     bool hasLastMousePosition_ = false;
     bool mouseCaptured_ = false;
+    int simulatorFovDegrees_ = 100;
     oxrsys::qt_simulator::SimulatorTrackingPose trackingPose_;
 };

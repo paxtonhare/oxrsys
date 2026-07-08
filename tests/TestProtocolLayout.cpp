@@ -15,10 +15,16 @@ TEST_CASE("C++ protocol layouts match the documented wire format", "[protocol]")
 {
     STATIC_REQUIRE(SERVER_ANNOUNCE_BASE_SIZE == 92);
     STATIC_REQUIRE(CLIENT_CONNECT_BASE_SIZE == 80);
-    STATIC_REQUIRE(sizeof(ServerAnnounce) == 140);
+    STATIC_REQUIRE(LATENCY_REPORT_BASE_SIZE == 20);
+    STATIC_REQUIRE(sizeof(ServerAnnounce) == 152);
     STATIC_REQUIRE(offsetof(ServerAnnounce, serverFeatures) == SERVER_ANNOUNCE_BASE_SIZE);
+    STATIC_REQUIRE(offsetof(ServerAnnounce, spatialPort) == 144);
     STATIC_REQUIRE(sizeof(ClientConnect) == 96);
     STATIC_REQUIRE(offsetof(ClientConnect, clientCapabilities) == CLIENT_CONNECT_BASE_SIZE);
+    STATIC_REQUIRE(offsetof(ClientConnect, supportedCodecs) == 88);
+    STATIC_REQUIRE(CLIENT_CODEC_CAPABILITY_H265 == 0x00000001);
+    STATIC_REQUIRE(CLIENT_CODEC_CAPABILITY_H264 == 0x00000002);
+    STATIC_REQUIRE(CLIENT_CAPABILITY_TEN_BIT_ENCODING == 0x00000400);
     STATIC_REQUIRE(sizeof(VideoPacketHeader) == 24);
     STATIC_REQUIRE(offsetof(VideoPacketHeader, fecGroupLastPacketPayloadSize) == 12);
     STATIC_REQUIRE(offsetof(VideoPacketHeader, reserved) == 14);
@@ -32,11 +38,16 @@ TEST_CASE("C++ protocol layouts match the documented wire format", "[protocol]")
     STATIC_REQUIRE(STREAMING_MIN_BITRATE_MBPS == 1);
     STATIC_REQUIRE(STREAMING_MAX_BITRATE_MBPS == 200);
     STATIC_REQUIRE(CLIENT_MAX_BITRATE_USE_SERVER_CONFIG == 0);
+    STATIC_REQUIRE(SPATIAL_PORT == 9948);
 
-    STATIC_REQUIRE(sizeof(LatencyReport) == 20);
+    STATIC_REQUIRE(sizeof(LatencyReport) == 40);
     STATIC_REQUIRE(sizeof(RequestKeyframe) == 12);
     STATIC_REQUIRE(sizeof(HapticsCommand) == 16);
     STATIC_REQUIRE(sizeof(NackRequest) == 24);
+    STATIC_REQUIRE(sizeof(StreamConfigUpdate) == 68);
+    STATIC_REQUIRE(sizeof(StreamConfigAck) == 16);
+    STATIC_REQUIRE(SERVER_FEATURE_STREAM_RECONFIGURE == 0x00000010);
+    STATIC_REQUIRE(CLIENT_CAPABILITY_STREAM_RECONFIGURE == 0x00000010);
 
     STATIC_REQUIRE(sizeof(TrackingPacket) == 1008);
     STATIC_REQUIRE(offsetof(TrackingPacket, headLinearVelocity) == 152);
@@ -87,4 +98,33 @@ TEST_CASE("Foveated encoding presets calculate ALVR-style optimized eye sizes", 
         CalculateFoveationLayout(2144, 2144, FoveationPreset::Off);
     CHECK(off.optimizedEyeWidth == 2144);
     CHECK(off.optimizedEyeHeight == 2144);
+}
+
+TEST_CASE("Quest foveated layout stays aligned and rejects incoherent targets", "[protocol][foveation]")
+{
+    const FoveationPreset presets[] = {
+        FoveationPreset::Light,
+        FoveationPreset::Medium,
+        FoveationPreset::High,
+    };
+
+    for (FoveationPreset preset : presets)
+    {
+        const FoveationLayout layout =
+            CalculateFoveationLayout(1512, 1680, preset);
+        CHECK((layout.optimizedEyeWidth % 32) == 0);
+        CHECK((layout.optimizedEyeHeight % 32) == 0);
+        CHECK(layout.optimizedEyeWidth < layout.targetEyeWidth);
+        CHECK(layout.optimizedEyeHeight < layout.targetEyeHeight);
+        CHECK(layout.eyeWidthRatio > 0.0f);
+        CHECK(layout.eyeWidthRatio <= 1.0f);
+        CHECK(layout.eyeHeightRatio > 0.0f);
+        CHECK(layout.eyeHeightRatio <= 1.0f);
+        CHECK(IsFoveatedEncodingLayoutUsable(layout, 1512, 1680));
+        CHECK_FALSE(IsFoveatedEncodingLayoutUsable(layout, 1520, 1680));
+    }
+
+    const FoveationLayout scaledLayout =
+        CalculateFoveationLayout(1136, 1264, FoveationPreset::Light);
+    CHECK_FALSE(IsFoveatedEncodingLayoutUsable(scaledLayout, 1512, 1680));
 }

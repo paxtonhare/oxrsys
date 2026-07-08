@@ -50,6 +50,7 @@ public:
 
     // Stats
     uint64_t GetPacketCount() const { return packetCount_.load(); }
+    uint64_t GetReorderedDropCount() const { return reorderedDropCount_.load(); }
 
 private:
     struct HistorySample
@@ -66,6 +67,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> hasData_{false};
     std::atomic<uint64_t> packetCount_{0};
+    std::atomic<uint64_t> reorderedDropCount_{0};
 
     mutable std::mutex poseMutex_;
     oxr::protocol::TrackingPacket latestPacket_ = {};

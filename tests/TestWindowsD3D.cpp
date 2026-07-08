@@ -9,7 +9,7 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
-#include <openxr/openxr_platform.h>
+#include "OpenXRPlatform.h"
 
 #include <algorithm>
 #include <array>
@@ -201,7 +201,7 @@ void CheckInvalidSwapchainCreation(XrSession session, int64_t validFormat)
     invalidShapeInfo = createInfo;
     invalidShapeInfo.mipCount = 2;
     CHECK(xrCreateSwapchain(session, &invalidShapeInfo, &swapchain) ==
-          XR_ERROR_VALIDATION_FAILURE);
+          XR_ERROR_FEATURE_UNSUPPORTED);
     CHECK(swapchain == XR_NULL_HANDLE);
 }
 

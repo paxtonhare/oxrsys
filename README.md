@@ -10,11 +10,12 @@ OXRSys is independent software. It is not affiliated with, endorsed by, sponsore
 
 ### Android VR Client
 
-The Android VR client can be used over WiFi or USB. The USB path is the best way to experiment with the runtime because it gives the lowest latency. Install `adb` first.
+The Android VR client can be used over WiFi or USB. The USB path is the best way to experiment with the runtime because it gives the lowest latency. The macOS SwiftUI Home app can configure USB reverse directly through the headset USB ADB interface, so Android Studio and the Android SDK are not required for normal USB setup; a running local ADB server or external `adb` executable remains a fallback.
+For Quest sideload validation, `assembleRelease` is the stable debug-signed APK; `assembleOptimizedRelease` is reserved for diagnosing optimized Android regressions.
 
 ### Home Apps
 
-OXRSys Home exists as a native Apple app and a Qt app. The Apple app owns the macOS direct-distribution workflow. The Qt app is Linux-first and also keeps its launcher, transport readiness, custom ADB selection, and simulator window code portable for macOS and Windows.
+OXRSys Home exists as a native Apple app and a Qt app. The Apple app owns the macOS direct-distribution workflow. The Qt app is Linux-first and also keeps its launcher, transport readiness, Settings-based Internal/Custom ADB selection, and simulator window code portable for macOS and Windows.
 The macOS package helper builds the runtime and Home app into one local folder; the distribution helper signs that package and can submit the archive for notarization.
 
 ## Disclaimer
@@ -25,7 +26,7 @@ The macOS package helper builds the runtime and Home app into one local folder; 
 
 - macOS Support: Due to non-standard OpenXR implementation on macOS, specific workarounds are required. OXRSys Home can launch configured apps with `XR_RUNTIME_JSON`; command-line launches remain useful for debugging. Unity projects should use the `net.demonixis.oxrsys-unity` Package Manager package under `scripts/unity/`.
 - Tracking Spaces: The runtime supports `VIEW`, `LOCAL`, `LOCAL_FLOOR`, and `STAGE`, including `XR_EXT_local_floor` for OpenXR 1.0 applications that request floor-origin tracking.
-- Meta Quest Integration: The interface is currently minimal; the app displays a blue screen during standby and a green screen during loading.
+- Meta Quest Integration: The headset client now shows a local status shell with reset and passthrough/3D controls while waiting for video.
 
 ### Stability & Contributions
 
@@ -38,25 +39,25 @@ This project uses AI-generated code and documentation. We appreciate professiona
 ## Dependencies
 
 - macOS 13 or later for Apple frontends and the Metal runtime path
-- Linux with Vulkan, FFmpeg development libraries, pkg-config, and Qt 6 for the Linux runtime and Qt frontends
+- Linux with Vulkan, OpenGL/GLX/X11 development files, FFmpeg development libraries, pkg-config, and Qt 6 for the Linux runtime and Qt frontends
 - Windows x64 or ARM64 with the Windows SDK and Ninja for the Direct3D/Vulkan runtime paths; FFmpeg is statically linked into vcpkg Windows runtime builds by the Windows configure helper, or can be supplied as a local development package. Qt 6 is required when building Qt Home.
 - C++20
 - CMake with FetchContent
 - Ninja
 - OpenXR SDK headers and loader
-- Metal
+- Xcode Metal Toolchain for Apple builds and CTS Metal (`xcodebuild -downloadComponent MetalToolchain`)
 - Vulkan headers for interop paths, from the Vulkan SDK or the CMake FetchContent fallback
 - Android SDK, Android NDK, and Java 17 for the Android client
 
 ## Status
 
-- macOS: Metal rendering, release-time Metal streaming snapshots, core runtime flow, Vulkan interop, typed graphics/frame plumbing, and loader-backed runtime tests are in place.
-- Linux: Vulkan runtime swapchains and FFmpeg streaming are wired, including Vulkan image readback for common RGBA/BGRA color swapchains.
-- Windows: Vulkan, D3D11, and D3D12 runtime builds are enabled with Winsock transport, FFmpeg streaming readback for common RGBA/BGRA color swapchains, vcpkg static FFmpeg runtime linking, and Qt Home install/launch/global-registration support.
+- macOS: Metal rendering, release-time Metal streaming snapshots, H.264/H.265 VideoToolbox streaming selection with negotiated H.265 Main10 support, core runtime flow, Vulkan/MoltenVK runtime plumbing, typed graphics/frame plumbing, and loader-backed runtime tests are in place. A CMake FFmpeg encoder option is available for Vulkan/codec pipeline validation.
+- Linux: Vulkan runtime streaming now uses FFmpeg H.264/H.265 encode with Vulkan image readback, and the first Linux OpenGL GLX backend exposes `XR_KHR_opengl_enable` with bounded PBO readback for desktop validation.
+- Windows: Vulkan, D3D11, and D3D12 runtime builds are enabled with Winsock transport, FFmpeg streaming readback for common RGBA/BGRA color swapchains, vcpkg static FFmpeg runtime linking, and Qt Home install/launch/global-registration support. OpenGL Win32/WGL remains a follow-up backend.
 - `XR_EXT_conformance_automation`, `XR_EXT_hand_tracking`, `XR_EXT_hand_interaction`, and `XR_EXT_debug_utils` are implemented.
-- The Android VR client feeds real Quest/PICO hand joints into the runtime, gates controller poses and actions with explicit active flags, keeps hand-interaction bindings available alongside active controllers with controller-first priority, supports WiFi UDP and reconnecting USB ADB reverse TCP streaming, recenters streaming poses per client session, matches per-frame render poses for smoother headset reprojection, applies server-selected refresh requests, exposes preset-driven `XR_FB_foveation`, and supports the Quest shader path for foveated-encoding decompression and edge-aware upscaling.
-- The visionOS viewer uses a minimal floating search window, then enters immersive VR automatically once the stream connects and sends head pose, hand joints, and first-pass tracked accessory controller data back to the runtime when available.
-- OXRSys Home is now a direct-distribution launcher and runtime selector for compatible apps such as Godot and Unity, with a main-window runtime activity summary, autosaved streaming settings up to the shared 200 Mbps runtime cap, refresh/encoder/foveation/upscaling controls, bounded Quest logcat capture setup, runtime log reveal actions, transport readiness controls, per-app custom ADB path selection, and optional Developer simulator workflows. Qt Home keeps the same shared streaming controls, keeps slow WiFi/ADB readiness work off the UI thread, and preserves a verified Quest USB reverse setup across transient ADB visibility loss during VR app launch. The Qt Home simulator opens in a dedicated window, uses decoded video as the interaction surface when FFmpeg is available, and keeps tracking-only fallback visible when it is not. Qt Home and Qt simulator reuse the Xcode app icons, and Windows builds open as GUI apps without a console window.
+- The Android VR client feeds real Quest/PICO hand joints into the runtime, gates controller poses and actions with explicit active flags, keeps hand-interaction bindings available alongside active controllers with controller-first priority, supports WiFi UDP and reconnecting USB ADB reverse TCP streaming, decodes negotiated H.264/H.265 streams while preferring H.265, keeps a reserved optional spatial channel for anchors/scene data, shows a local status shell with controller lasers plus hand laser/pinch controls before video arrives, matches per-frame render poses for smoother headset reprojection, reprojects short decode/network gaps with a configurable Quest client mode, reports active refresh before streaming, supports optional server-announced `XR_FB_foveation` overrides for the headset viewer, supports negotiated Quest passthrough during MR streaming with app alpha-blend kept behind an explicit config opt-in, supports USB TCP dynamic encoded-resolution reconfiguration in ABR full mode, supports the Quest shader path for foveated-encoding decompression and edge-aware upscaling, recovers when an initial video stream never arrives, reports frame age/reprojection/passthrough readiness/effective bitrate/foveated-status telemetry for runtime status, and keeps decoder output draining off the XR frame loop.
+- The visionOS viewer uses a compact floating control window for server search and explicit connection, decodes negotiated H.264/H.265 streams while preferring H.265, supports optional automatic immersive entry, defaults to hidden-window immersive mode with return-to-menu re-entry/disconnect controls, offers optional keep-window-visible behavior and visible-hands upper-limb control, and sends head pose, hand joints, and first-pass tracked accessory controller data back to the runtime when available.
+- OXRSys Home is now a direct-distribution launcher and runtime selector for compatible apps such as Godot and Unity, with a first-launch registration prompt, main-window runtime activity summary, autosaved streaming settings up to the shared 200 Mbps runtime cap, refresh/codec/encoder/foveated-encoding/ABR/dynamic-resolution/passthrough/spatial controls, a separate Headset Client section for client foveation, reprojection, upscaling, and reserved audio, bounded Quest logcat capture setup, runtime log reveal actions, transport readiness controls, one-step USB reverse setup, Settings-based Internal/Custom ADB selection, native ADB-server protocol support with external `adb` fallback, per-app custom ADB path selection, and optional Developer simulator workflows. Qt Home keeps the same shared streaming controls, keeps slow WiFi/ADB readiness work off the UI thread, preserves a verified Quest USB reverse setup across transient ADB visibility loss during VR app launch, supports Windows install/launch/global-registration workflows, and opens as a GUI app without a console. The Apple and Qt simulators own simulator FOV locally and send eye-FOV tracking metadata; the shared Apple receiver and the Qt Home simulator use decoded H.264/H.265 video as the interaction surface when available, and keep tracking-only fallback visible when it is not.
 - As of March 17, 2026, the pinned non-interactive OpenXR-CTS baseline is green locally: 63 passed, 36 skipped, 0 failed.
 
 ## Documentation

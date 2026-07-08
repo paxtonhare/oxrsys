@@ -65,10 +65,13 @@ public:
     }
     bool IsSystemIdValid(XrSystemId systemId) const;
     bool SupportsLocalFloor() const;
+    bool SupportsPassthroughBlendMode() const { return passthroughBlendModeEnabled_; }
     void MarkMetalGraphicsRequirementsQueried();
     bool HasQueriedMetalGraphicsRequirements() const;
     void MarkVulkanGraphicsRequirementsQueried();
     bool HasQueriedVulkanGraphicsRequirements() const;
+    void MarkOpenGLGraphicsRequirementsQueried();
+    bool HasQueriedOpenGLGraphicsRequirements() const;
     void MarkD3D11GraphicsRequirementsQueried();
     bool HasQueriedD3D11GraphicsRequirements() const;
     void MarkD3D12GraphicsRequirementsQueried();
@@ -78,7 +81,7 @@ public:
     void SetDebugUtilsObjectName(XrObjectType objectType, uint64_t objectHandle, const char* objectName);
     std::string GetDebugUtilsObjectName(XrObjectType objectType, uint64_t objectHandle) const;
 
-    static constexpr uint32_t EyeWidth = 1512;
+    static constexpr uint32_t EyeWidth = 1512;   // Quest 3 base per-eye (default device)
     static constexpr uint32_t EyeHeight = 1680;
 
 private:
@@ -107,6 +110,7 @@ private:
     Session* session_ = nullptr;
     XrVersion apiVersion_ = XR_CURRENT_API_VERSION;
     std::vector<std::string> enabledExtensions_;
+    bool passthroughBlendModeEnabled_ = false;
 
     std::mutex eventMutex_;
     std::deque<XrEventDataBuffer> eventQueue_;
@@ -115,6 +119,7 @@ private:
     std::unordered_map<DebugUtilsObjectKey, std::string, DebugUtilsObjectKeyHash> debugUtilsObjectNames_;
     bool metalGraphicsRequirementsQueried_ = false;
     bool vulkanGraphicsRequirementsQueried_ = false;
+    bool openGLGraphicsRequirementsQueried_ = false;
     bool d3d11GraphicsRequirementsQueried_ = false;
     bool d3d12GraphicsRequirementsQueried_ = false;
 };

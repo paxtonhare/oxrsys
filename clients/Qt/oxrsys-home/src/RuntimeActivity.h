@@ -12,14 +12,32 @@ struct RuntimeStreamingStats
     int refreshRateHz = 0;
     int currentBitrateMbps = 0;
     int maxBitrateMbps = 0;
+    int configuredBitrateMbps = 0;
     int renderWidth = 0;
     int renderHeight = 0;
     int encodedWidth = 0;
     int encodedHeight = 0;
+    QString videoCodec;
     QString encoderPreset;
     QString foveatedEncodingPreset;
+    QString foveatedEncodingRequestedPreset;
+    QString foveatedEncodingStatus;
+    bool foveatedEncodingActive = false;
     QString clientFoveationPreset;
     bool clientUpscaling = false;
+    QString clientReprojectionMode;
+    QString abrMode;
+    QString abrState;
+    QString abrProfile;
+    double resolutionScale = 0.0;
+    double dynamicResolutionMinScale = 0.0;
+    bool streamReconfigure = false;
+    int streamConfigSequence = 0;
+    bool passthroughEnabled = false;
+    bool passthroughSupported = false;
+    bool passthroughReady = false;
+    QString occlusionMode;
+    bool spatialEnabled = false;
     bool headsetAudio = false;
 
     double serverPipelineMs = 0.0;
@@ -28,6 +46,7 @@ struct RuntimeStreamingStats
     double clientDecodeMs = 0.0;
     double clientCompositorMs = 0.0;
     double predictionHorizonMs = 0.0;
+    double displayedFrameAgeMs = 0.0;
 
     double encodeQueueAverageMs = 0.0;
     double encodeQueueP95Ms = 0.0;
@@ -45,6 +64,9 @@ struct RuntimeStreamingStats
     int replacedFramesDelta = 0;
     int keyframeRequestsDelta = 0;
     int pendingDepthMax = 0;
+    int reprojectedFramesDelta = 0;
+    int staleFrameReusesDelta = 0;
+    int renderPoseFallbacksDelta = 0;
 
     static RuntimeStreamingStats parse(const QJsonObject& object);
 };

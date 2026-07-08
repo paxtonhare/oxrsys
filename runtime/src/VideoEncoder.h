@@ -10,12 +10,14 @@
 #include <vector>
 
 #include "GraphicsTypes.h"
+#include <oxrsys/protocol/Protocol.h>
 
 /**
- * H.265 video encoder facade.
+ * Low-latency video encoder facade.
  *
- * Apple builds use VideoToolbox with Metal textures. Linux and Windows builds
- * use FFmpeg with backend-specific readback state behind GraphicsContext.
+ * Apple builds use VideoToolbox with Metal textures by default. Linux builds
+ * use FFmpeg and keep backend-specific graphics readback state behind
+ * GraphicsContext. macOS can opt into FFmpeg for codec/pipeline testing.
  */
 class VideoEncoder
 {
@@ -55,29 +57,43 @@ public:
     VideoEncoder();
     ~VideoEncoder();
 
+    // Non-copyable
     VideoEncoder(const VideoEncoder&) = delete;
     VideoEncoder& operator=(const VideoEncoder&) = delete;
 
     bool Initialize(uint32_t width, uint32_t height, uint32_t fps,
-                    uint32_t bitrateMbps, const GraphicsContext& graphicsContext);
+                    uint32_t bitrateMbps, const GraphicsContext& graphicsContext,
+                    oxr::protocol::VideoCodec codec);
     void Shutdown();
     void SetFoveationSettings(const FoveationSettings& settings) { foveationSettings_ = settings; }
+    // Applies before Initialize(); only the H.265 VideoToolbox path supports Main10.
+    void SetTenBitEncoding(bool enabled) { tenBit_ = enabled; }
     static bool SupportsFoveatedEncoding(const GraphicsContext& graphicsContext);
 
+    // Encode one backend-native texture/image source.
+    // The callback is invoked for each NAL unit produced
     bool Encode(FrameImageSource imageSource, int64_t timestampNs, OnNalUnitCallback callback,
                 OnFrameEncodedCallback frameCallback = {});
+
+    // Encode two backend-native texture/image sources side-by-side (left eye | right eye)
+    // The combined image has double the width of a single eye
     bool EncodeStereo(FrameSource frameSource, int64_t timestampNs, OnNalUnitCallback callback,
                       OnFrameEncodedCallback frameCallback = {});
 
+    // Force a keyframe on the next encode
     void ForceKeyframe();
+
+    // Update encoding bitrate mid-stream (VideoToolbox supports this live)
     void SetBitrate(uint32_t bitrateMbps);
     uint32_t GetBitrateMbps() const { return bitrateMbps_; }
+    oxr::protocol::VideoCodec GetCodec() const { return codec_; }
 
     bool IsInitialized() const
     {
         return videoToolbox_.session != nullptr || ffmpeg_.codecContext != nullptr;
     }
 
+    // Stats
     uint32_t GetEncodedFrameCount() const { return frameCount_; }
     uint32_t GetDroppedFrameCount() const { return droppedFrameCount_.load(); }
     uint32_t GetInFlightFrameCount() const { return inFlightFrameCount_.load(); }
@@ -89,6 +105,9 @@ private:
         void* metalTexture = nullptr;     // CVMetalTextureRef
         void* tmpLeftTexture = nullptr;   // id<MTLTexture>
         void* tmpRightTexture = nullptr;  // id<MTLTexture>
+        void* foveatedScratchTexture = nullptr; // id<MTLTexture>
+        void* leftCropTexture = nullptr;   // id<MTLTexture>, lazily (re)sized to sourceWidth/sourceHeight
+        void* rightCropTexture = nullptr;  // id<MTLTexture>, lazily (re)sized to sourceWidth/sourceHeight
         bool inUse = false;
     };
 
@@ -107,7 +126,7 @@ private:
         void* metalDevice = nullptr;      // id<MTLDevice>
         void* commandQueue = nullptr;     // id<MTLCommandQueue>
         void* scaler = nullptr;           // MPSImageBilinearScale*
-        void* foveationPipeline = nullptr; // id<MTLRenderPipelineState>
+        void* foveationPipeline = nullptr; // id<MTLComputePipelineState>
         void* foveationSampler = nullptr;  // id<MTLSamplerState>
     };
 
@@ -123,18 +142,20 @@ private:
     VideoToolboxState videoToolbox_ = {};
     FfmpegState ffmpeg_ = {};
 
-    uint32_t width_ = 0;
+    uint32_t width_ = 0;       // Total encoded width (may be 2x eye width for stereo)
     uint32_t height_ = 0;
-    uint32_t eyeWidth_ = 0;
+    uint32_t eyeWidth_ = 0;   // Single eye width (width_/2 for stereo)
     uint32_t fps_ = 90;
     uint32_t bitrateMbps_ = 50;
+    oxr::protocol::VideoCodec codec_ = oxr::protocol::VideoCodec::H265;
     FoveationSettings foveationSettings_ = {};
+    bool tenBit_ = false;
     uint32_t frameCount_ = 0;
     std::atomic<bool> forceKeyframe_{false};
     std::atomic<bool> shuttingDown_{false};
+    std::atomic<bool> foveationValidationWarningLogged_{false};
     std::atomic<uint32_t> droppedFrameCount_{0};
     std::atomic<uint32_t> inFlightFrameCount_{0};
-    std::atomic<uint32_t> consecutiveNoPacketFrames_{0};
     std::atomic<uint64_t> frameNumberCounter_{0};
     std::mutex slotMutex_;
     static constexpr size_t SlotCount = 3;

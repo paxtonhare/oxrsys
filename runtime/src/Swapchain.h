@@ -2,25 +2,25 @@
 
 #pragma once
 
+#include <openxr/openxr.h>
+#include "GraphicsTypes.h"
 #ifdef XR_USE_GRAPHICS_API_VULKAN
 #include <vulkan/vulkan.h>
 #endif
-#if defined(_WIN32)
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+#include <GL/gl.h>
+#endif
+#if defined(_WIN32) && (defined(OXRSYS_USE_D3D11) || defined(OXRSYS_USE_D3D12) || \
+                        defined(XR_USE_GRAPHICS_API_D3D11) || defined(XR_USE_GRAPHICS_API_D3D12))
 #include "D3DGraphicsContext.h"
 #endif
-
-#include <openxr/openxr.h>
-#include <openxr/openxr_platform.h>
-
-#include "GraphicsTypes.h"
-
-#include <atomic>
-#include <cstddef>
+#include <vector>
 #include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
-#include <vector>
+#include <atomic>
+#include <cstddef>
 
 struct SwapchainStagingSlotState
 {
@@ -35,20 +35,7 @@ struct SwapchainSnapshotPoolState
 class Swapchain
 {
 public:
-    Swapchain(void* metalDevice, const XrSwapchainCreateInfo* createInfo);
     Swapchain(const GraphicsContext& graphicsContext, const XrSwapchainCreateInfo* createInfo);
-
-#ifdef XR_USE_GRAPHICS_API_VULKAN
-    Swapchain(GraphicsApi api, void* metalDevice,
-              const VulkanGraphicsContext* vulkanContext,
-              const XrSwapchainCreateInfo* createInfo);
-#endif
-#if defined(_WIN32)
-    Swapchain(GraphicsApi api, const D3D11GraphicsContext* d3d11Context,
-              const XrSwapchainCreateInfo* createInfo);
-    Swapchain(GraphicsApi api, const D3D12GraphicsContext* d3d12Context,
-              const XrSwapchainCreateInfo* createInfo);
-#endif
 
     ~Swapchain();
 
@@ -63,21 +50,42 @@ public:
     }
 
     XrResult EnumerateImages(uint32_t imageCapacityInput, uint32_t* imageCountOutput,
-                             XrSwapchainImageBaseHeader* images);
+                              XrSwapchainImageBaseHeader* images);
     XrResult AcquireImage(const XrSwapchainImageAcquireInfo* acquireInfo, uint32_t* index);
     XrResult WaitImage(const XrSwapchainImageWaitInfo* waitInfo);
     XrResult ReleaseImage(const XrSwapchainImageReleaseInfo* releaseInfo);
     XrResult InitializationResult() const { return initializationResult_; }
 
-    uint32_t GetWidth() const { return width_; }
-    uint32_t GetHeight() const { return height_; }
-    int64_t GetFormat() const { return format_; }
-    uint32_t GetImageCount() const { return imageCount_; }
+    uint32_t GetWidth() const
+    {
+        return width_;
+    }
+    uint32_t GetHeight() const
+    {
+        return height_;
+    }
+    int64_t GetFormat() const
+    {
+        return format_;
+    }
+    uint32_t GetImageCount() const
+    {
+        return imageCount_;
+    }
 
+    // Get the most recently released texture (MTLTexture* for debug rendering)
     void* GetLastReleasedTexture() const;
+
+    // Get a texture view for a specific array slice of the last released texture.
+    // For non-array textures (arraySize==1), returns the texture as-is.
+    // Caller must call ReleaseTextureSlice() on the returned pointer when done.
     void* GetLastReleasedTextureSlice(uint32_t arrayIndex) const;
+
+    // Release a texture view obtained from GetLastReleasedTextureSlice.
     static void ReleaseTextureSlice(void* textureSlice);
 
+    // Acquire a backend-native image source for streaming. Dynamic backends prefer
+    // release-time snapshots so encoding can wait/read outside xrEndFrame.
     FrameImageSource GetLastReleasedFrameImageSource(uint32_t arrayIndex) const;
 
     uint32_t GetArraySize() const
@@ -108,14 +116,24 @@ public:
         PFN_vkFreeMemory freeMemory = nullptr;
         PFN_vkDestroyFence destroyFence = nullptr;
         PFN_vkWaitForFences waitForFences = nullptr;
-        PFN_vkGetFenceStatus getFenceStatus = nullptr;
         PFN_vkMapMemory mapMemory = nullptr;
         PFN_vkUnmapMemory unmapMemory = nullptr;
         PFN_vkInvalidateMappedMemoryRanges invalidateMappedMemoryRanges = nullptr;
     };
 #endif
 
-#if defined(_WIN32)
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+    struct OpenGLFrameSource
+    {
+        std::vector<uint8_t> pixels;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        GLenum format = GL_RGBA;
+    };
+#endif
+
+#if defined(_WIN32) && (defined(OXRSYS_USE_D3D11) || defined(OXRSYS_USE_D3D12) || \
+                        defined(XR_USE_GRAPHICS_API_D3D11) || defined(XR_USE_GRAPHICS_API_D3D12))
     struct D3D11FrameSource
     {
         std::shared_ptr<void> lifetime = {};
@@ -154,26 +172,55 @@ private:
     };
 
     void InitMetal(void* metalDevice, const XrSwapchainCreateInfo* createInfo);
-#ifdef XR_USE_GRAPHICS_API_VULKAN
-    void InitVulkan(void* metalDevice, const VulkanGraphicsContext* vulkanContext,
+    void InitVulkan(void* metalDevice, const VulkanGraphicsContext& vulkanContext,
+                     const XrSwapchainCreateInfo* createInfo);
+    void InitOpenGL(const OpenGLGraphicsContext& openGLContext,
                     const XrSwapchainCreateInfo* createInfo);
-    FrameImageSource SnapshotVulkanFrameImageSource(uint32_t arrayIndex) const;
+#if defined(_WIN32) && (defined(OXRSYS_USE_D3D11) || defined(XR_USE_GRAPHICS_API_D3D11))
+    void InitD3D11(const D3D11GraphicsContext& d3d11Context,
+                   const XrSwapchainCreateInfo* createInfo);
 #endif
-#if defined(_WIN32)
-    void InitD3D11(const D3D11GraphicsContext* d3d11Context,
+#if defined(_WIN32) && (defined(OXRSYS_USE_D3D12) || defined(XR_USE_GRAPHICS_API_D3D12))
+    void InitD3D12(const D3D12GraphicsContext& d3d12Context,
                    const XrSwapchainCreateInfo* createInfo);
-    void InitD3D12(const D3D12GraphicsContext* d3d12Context,
-                   const XrSwapchainCreateInfo* createInfo);
-    FrameImageSource SnapshotD3D11FrameImageSource(uint32_t arrayIndex) const;
-    FrameImageSource SnapshotD3D12FrameImageSource(uint32_t arrayIndex) const;
 #endif
     void InitMetalStaging(void* metalDevice);
-
+#ifdef XR_USE_GRAPHICS_API_METAL
+    XrResult EnumerateMetalImages(uint32_t imageCapacityInput,
+                                  XrSwapchainImageBaseHeader* images) const;
+    void DestroyMetalResources();
+    void SnapshotMetalReleasedImage();
+    void* GetLastReleasedMetalTextureSlice(uint32_t arrayIndex) const;
+    FrameImageSource SnapshotMetalFrameImageSource(uint32_t arrayIndex) const;
+    static void ReleaseMetalTextureSlice(void* textureSlice);
+#endif
 #ifdef XR_USE_GRAPHICS_API_VULKAN
+    XrResult EnumerateVulkanImages(uint32_t imageCapacityInput,
+                                   XrSwapchainImageBaseHeader* images) const;
+    void DestroyVulkanResources();
+    FrameImageSource SnapshotVulkanFrameImageSource(uint32_t arrayIndex) const;
     static void ReleaseVulkanFrameSource(VulkanFrameSource* source);
 #endif
-#if defined(_WIN32)
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+    XrResult EnumerateOpenGLImages(uint32_t imageCapacityInput,
+                                   XrSwapchainImageBaseHeader* images) const;
+    void DestroyOpenGLResources();
+    void SnapshotOpenGLReleasedImage(uint32_t releasedIndex);
+    void ResolveReadyOpenGLSnapshots();
+    FrameImageSource SnapshotOpenGLFrameImageSource(uint32_t arrayIndex) const;
+#endif
+#if defined(_WIN32) && (defined(OXRSYS_USE_D3D11) || defined(XR_USE_GRAPHICS_API_D3D11))
+    XrResult EnumerateD3D11Images(uint32_t imageCapacityInput,
+                                  XrSwapchainImageBaseHeader* images) const;
+    void DestroyD3D11Resources();
+    FrameImageSource SnapshotD3D11FrameImageSource(uint32_t arrayIndex) const;
     static void ReleaseD3D11FrameSource(D3D11FrameSource* source);
+#endif
+#if defined(_WIN32) && (defined(OXRSYS_USE_D3D12) || defined(XR_USE_GRAPHICS_API_D3D12))
+    XrResult EnumerateD3D12Images(uint32_t imageCapacityInput,
+                                  XrSwapchainImageBaseHeader* images) const;
+    void DestroyD3D12Resources();
+    FrameImageSource SnapshotD3D12FrameImageSource(uint32_t arrayIndex) const;
     static void ReleaseD3D12FrameSource(D3D12FrameSource* source);
 #endif
 
@@ -188,7 +235,7 @@ private:
 
     void* device_ = nullptr; // MTL::Device*
     void* metalCommandQueue_ = nullptr; // id<MTLCommandQueue>, app-owned
-    std::vector<void*> textures_;
+    std::vector<void*> textures_; // MTL::Texture* (always Metal textures, for debug rendering)
     void* snapshotEvent_ = nullptr; // id<MTLSharedEvent>
 
     struct StagingSlot
@@ -206,17 +253,43 @@ private:
     std::shared_ptr<SwapchainSnapshotPoolState> backendSnapshotPool_ =
         std::make_shared<SwapchainSnapshotPoolState>();
 
-#ifdef XR_USE_GRAPHICS_API_VULKAN
-    const VulkanGraphicsContext* vulkanContext_ = nullptr;
-#endif
-    std::vector<uint64_t> vkImages_;
-    std::vector<uint64_t> vkMemories_;
+    // Vulkan resources (only used when graphicsApi_ == Vulkan)
+    void* vkDevice_ = nullptr;
+    VulkanGraphicsContext vulkanContext_ = {};
+    std::vector<uint64_t> vkImages_;   // VkImage handles
+    std::vector<uint64_t> vkMemories_; // VkDeviceMemory handles
+    std::vector<FrameImageSource> lastVulkanSnapshots_;
 
-#if defined(_WIN32)
-    const D3D11GraphicsContext* d3d11Context_ = nullptr;
-    const D3D12GraphicsContext* d3d12Context_ = nullptr;
+    // OpenGL resources (only used when graphicsApi_ == OpenGL)
+    OpenGLGraphicsContext openGLContext_ = {};
+#ifdef XR_USE_GRAPHICS_API_OPENGL
+    struct OpenGLReadbackSlot
+    {
+        GLuint pbo = 0;
+        GLsync fence = nullptr;
+        size_t size = 0;
+        uint32_t arrayIndex = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        GLenum format = GL_RGBA;
+        bool pending = false;
+    };
+
+    std::vector<GLuint> glTextures_;
+    std::vector<OpenGLReadbackSlot> glReadbackSlots_;
+    std::vector<uint32_t> glReadbackNextSlotByLayer_;
+    std::vector<std::shared_ptr<OpenGLFrameSource>> lastOpenGLSnapshots_;
+#endif
+
+#if defined(_WIN32) && (defined(OXRSYS_USE_D3D11) || defined(XR_USE_GRAPHICS_API_D3D11))
+    D3D11GraphicsContext d3d11Context_ = {};
     std::vector<void*> d3d11Textures_;
+    std::vector<FrameImageSource> lastD3D11Snapshots_;
+#endif
+#if defined(_WIN32) && (defined(OXRSYS_USE_D3D12) || defined(XR_USE_GRAPHICS_API_D3D12))
+    D3D12GraphicsContext d3d12Context_ = {};
     std::vector<void*> d3d12Resources_;
+    std::vector<FrameImageSource> lastD3D12Snapshots_;
 #endif
 
     uint32_t nextAcquireIndex_ = 0;
@@ -225,6 +298,5 @@ private:
     bool hasReleasedImage_ = false;
     std::vector<ImageState> imageStates_;
     std::deque<uint32_t> acquiredImageOrder_;
-    std::deque<bool> acquiredImageWaitEligible_;
     mutable std::mutex stateMutex_;
 };

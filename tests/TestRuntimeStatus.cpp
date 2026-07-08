@@ -56,6 +56,11 @@ std::filesystem::path RuntimeStatusPathForHome(const std::filesystem::path& home
 #elif defined(_WIN32)
     return home / "Local/OXRSys/runtime_status.json";
 #else
+    if (const char* xdgStateHome = std::getenv("XDG_STATE_HOME");
+        xdgStateHome != nullptr && xdgStateHome[0] != '\0')
+    {
+        return std::filesystem::path(xdgStateHome) / "oxrsys/runtime_status.json";
+    }
     return home / ".local/state/oxrsys/runtime_status.json";
 #endif
 }
@@ -80,14 +85,32 @@ TEST_CASE("RuntimeStatus writes streaming stats only while streaming", "[runtime
     stats.refreshRateHz = 90;
     stats.currentBitrateMbps = 42;
     stats.maxBitrateMbps = 50;
+    stats.configuredBitrateMbps = 80;
     stats.renderWidth = 3664;
     stats.renderHeight = 1920;
     stats.encodedWidth = 2752;
     stats.encodedHeight = 1440;
+    stats.videoCodec = "h264";
     stats.encoderPreset = "quality";
     stats.foveatedEncodingPreset = "medium";
+    stats.foveatedEncodingRequestedPreset = "medium";
+    stats.foveatedEncodingStatus = "active";
+    stats.foveatedEncodingActive = true;
     stats.clientFoveationPreset = "high";
     stats.clientUpscaling = true;
+    stats.clientReprojectionMode = "pose_warp";
+    stats.abrMode = "full";
+    stats.abrState = "constrained";
+    stats.abrProfile = "smooth";
+    stats.resolutionScale = 0.68;
+    stats.dynamicResolutionMinScale = 0.50;
+    stats.streamReconfigure = true;
+    stats.streamConfigSequence = 7;
+    stats.passthroughEnabled = true;
+    stats.passthroughSupported = false;
+    stats.passthroughReady = false;
+    stats.occlusionMode = "scene_mesh";
+    stats.spatialEnabled = true;
     stats.headsetAudio = false;
     stats.serverPipelineLatencyMs = 12.5;
     stats.clientPipelineLatencyMs = 18.25;
@@ -95,6 +118,7 @@ TEST_CASE("RuntimeStatus writes streaming stats only while streaming", "[runtime
     stats.clientDecodeMs = 6.75;
     stats.clientCompositorMs = 11.0;
     stats.predictionHorizonMs = 30.75;
+    stats.displayedFrameAgeMs = 24.5;
     stats.encodeQueueAverageMs = 0.5;
     stats.encodeQueueP95Ms = 1.25;
     stats.encodeGpuAverageMs = 2.0;
@@ -110,6 +134,13 @@ TEST_CASE("RuntimeStatus writes streaming stats only while streaming", "[runtime
     stats.replacedFramesDelta = 3;
     stats.keyframeRequestsDelta = 1;
     stats.pendingDepthMax = 1;
+    stats.videoSendQueueDepthMax = 2;
+    stats.videoSendDroppedFramesDelta = 4;
+    stats.videoTcpSendFailuresDelta = 1;
+    stats.videoUdpRetransmittedPacketsDelta = 7;
+    stats.reprojectedFramesDelta = 5;
+    stats.staleFrameReusesDelta = 6;
+    stats.renderPoseFallbacksDelta = 2;
     RuntimeStatus::SetStreamingStats(stats);
 
     const auto statusPath = RuntimeStatusPathForHome(home);
@@ -121,15 +152,42 @@ TEST_CASE("RuntimeStatus writes streaming stats only while streaming", "[runtime
     CHECK(Contains(streamingStatus, "\"sample_unix_ms\": 1800000000000"));
     CHECK(Contains(streamingStatus, "\"refresh_rate_hz\": 90"));
     CHECK(Contains(streamingStatus, "\"current_bitrate_mbps\": 42"));
+    CHECK(Contains(streamingStatus, "\"max_bitrate_mbps\": 50"));
+    CHECK(Contains(streamingStatus, "\"configured_bitrate_mbps\": 80"));
+    CHECK(Contains(streamingStatus, "\"video_codec\": \"h264\""));
     CHECK(Contains(streamingStatus, "\"encoder_preset\": \"quality\""));
     CHECK(Contains(streamingStatus, "\"foveated_encoding_preset\": \"medium\""));
+    CHECK(Contains(streamingStatus, "\"foveated_encoding_requested_preset\": \"medium\""));
+    CHECK(Contains(streamingStatus, "\"foveated_encoding_status\": \"active\""));
+    CHECK(Contains(streamingStatus, "\"foveated_encoding_active\": true"));
     CHECK(Contains(streamingStatus, "\"client_foveation_preset\": \"high\""));
     CHECK(Contains(streamingStatus, "\"client_upscaling\": true"));
+    CHECK(Contains(streamingStatus, "\"client_reprojection_mode\": \"pose_warp\""));
+    CHECK(Contains(streamingStatus, "\"abr_mode\": \"full\""));
+    CHECK(Contains(streamingStatus, "\"abr_state\": \"constrained\""));
+    CHECK(Contains(streamingStatus, "\"abr_profile\": \"smooth\""));
+    CHECK(Contains(streamingStatus, "\"resolution_scale\": 0.68"));
+    CHECK(Contains(streamingStatus, "\"dynamic_resolution_min_scale\": 0.5"));
+    CHECK(Contains(streamingStatus, "\"stream_reconfigure\": true"));
+    CHECK(Contains(streamingStatus, "\"stream_config_sequence\": 7"));
+    CHECK(Contains(streamingStatus, "\"passthrough_enabled\": true"));
+    CHECK(Contains(streamingStatus, "\"passthrough_supported\": false"));
+    CHECK(Contains(streamingStatus, "\"passthrough_ready\": false"));
+    CHECK(Contains(streamingStatus, "\"occlusion_mode\": \"scene_mesh\""));
+    CHECK(Contains(streamingStatus, "\"spatial_enabled\": true"));
     CHECK(Contains(streamingStatus, "\"headset_audio\": false"));
     CHECK(Contains(streamingStatus, "\"server_pipeline\": 12.5"));
+    CHECK(Contains(streamingStatus, "\"displayed_frame_age\": 24.5"));
     CHECK(Contains(streamingStatus, "\"total_p95\": 9.5"));
     CHECK(Contains(streamingStatus, "\"encoded_frames_total\": 120"));
     CHECK(Contains(streamingStatus, "\"keyframe_requests_delta\": 1"));
+    CHECK(Contains(streamingStatus, "\"video_send_queue_depth_max\": 2"));
+    CHECK(Contains(streamingStatus, "\"video_send_dropped_frames_delta\": 4"));
+    CHECK(Contains(streamingStatus, "\"video_tcp_send_failures_delta\": 1"));
+    CHECK(Contains(streamingStatus, "\"video_udp_retransmitted_packets_delta\": 7"));
+    CHECK(Contains(streamingStatus, "\"reprojected_frames_delta\": 5"));
+    CHECK(Contains(streamingStatus, "\"stale_frame_reuses_delta\": 6"));
+    CHECK(Contains(streamingStatus, "\"render_pose_fallbacks_delta\": 2"));
 
     RuntimeStatus::SetIdle();
     const std::string idleStatus = ReadFile(statusPath);

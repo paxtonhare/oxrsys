@@ -62,6 +62,9 @@ final class SimulatorModel {
     var ipdOffset: Float = 0 {
         didSet { renderer?.ipdOffset = ipdOffset }
     }
+    var simulatorFovDegrees: Int = 100 {
+        didSet { updateSimulatorProjection() }
+    }
 
     private var statsTimer: Timer?
     private var lastStatsTime: Int64 = 0
@@ -72,7 +75,7 @@ final class SimulatorModel {
     private let videoReceiver = VideoReceiver()
     private let trackingSender = TrackingSender()
     private let controlChannel = ControlChannel()
-    private let decoder = H265Decoder()
+    private let decoder = VideoDecoder()
     private let latencyReporter = LatencyReporter()
     let inputManager = SimulatorInputManager()
 
@@ -164,6 +167,7 @@ final class SimulatorModel {
             Task { @MainActor [weak self] in
                 guard let self, self.state == .discovering else { return }
                 self.discoveredServer = server
+                self.updateSimulatorProjection()
                 self.statusText = "Found: \(server.name) (\(server.resolution) @ \(server.refreshRate)Hz)"
             }
         }
@@ -207,14 +211,18 @@ final class SimulatorModel {
             }
         }
 
-        videoReceiver.start { [weak self] nalData, presentationTimeNs, receiveTimeNs in
+        videoReceiver.startReceivingEncoded(onNalUnit: { [weak self] frame in
             guard let self else { return }
             self.latencyReporter.noteFrameReceived(
-                presentationTimeNs: presentationTimeNs,
-                receiveTimeNs: receiveTimeNs
+                presentationTimeNs: frame.presentationTimeNs,
+                receiveTimeNs: frame.receiveTimeNs
             )
-            self.decoder.decode(nalData: nalData, presentationTimeNs: presentationTimeNs)
-        }
+            self.decoder.decode(
+                nalData: frame.data,
+                codec: frame.codec,
+                presentationTimeNs: frame.presentationTimeNs
+            )
+        })
 
         Thread.sleep(forTimeInterval: 0.05)
 
@@ -245,6 +253,7 @@ final class SimulatorModel {
 
         state = .disconnected
         discoveredServer = nil
+        updateSimulatorProjection()
         framesDecoded = 0
         isTracking = false
         statusText = {
@@ -284,6 +293,7 @@ final class SimulatorModel {
     }
 
     private func startSimulatorTracking() {
+        updateSimulatorProjection()
         isTracking = true
         lastTrackingTimeNs = VideoReceiver.monotonicNs()
 
@@ -393,6 +403,26 @@ final class SimulatorModel {
         arTracking.stop()
         #endif
         isTracking = false
+    }
+
+    private func updateSimulatorProjection() {
+        inputManager.setProjection(
+            verticalFovDegrees: Float(simulatorFovDegrees),
+            eyeAspect: simulatorPerEyeAspect()
+        )
+    }
+
+    private func simulatorPerEyeAspect() -> Float {
+        guard let announce = discoveredServer?.announce else {
+            return 1
+        }
+        if announce.renderWidth > 0, announce.renderHeight > 0 {
+            return max(0.1, Float(announce.renderWidth) * 0.5 / Float(announce.renderHeight))
+        }
+        if announce.encodedWidth > 0, announce.encodedHeight > 0 {
+            return max(0.1, Float(announce.encodedWidth) * 0.5 / Float(announce.encodedHeight))
+        }
+        return 1
     }
 
     nonisolated private static func nanoseconds(from time: CMTime) -> Int64 {

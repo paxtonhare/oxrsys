@@ -7,42 +7,61 @@ client, and Linux-first Qt frontends.
 The repository also includes a native SwiftUI macOS Home app and a Qt Home app for compatible app
 launching, runtime selection, runtime configuration, and runtime registration workflows.
 
-**Current state:** Metal/core runtime, Vulkan interop, Linux/Windows FFmpeg runtime paths,
+**Current state:** Metal/core runtime, Vulkan interop, Linux Vulkan/FFmpeg streaming,
+first-pass Linux OpenGL GLX backend, Windows Vulkan + Direct3D 11/12 runtime backends,
 typed internal graphics/frame plumbing, release-time Metal streaming snapshots,
+runtime-selectable H.264/H.265 video codecs and negotiated H.265 Main10 streaming,
 portable platform/socket helpers,
 controller and hand input paths, loader-backed
 runtime tests, `XR_EXT_conformance_automation`, `XR_EXT_hand_interaction`, and `XR_EXT_debug_utils`
-are in place. Windows now supports Vulkan plus first-pass D3D11/D3D12 session, swapchain, and
-streaming readback paths, with Qt Home install/launch support, explicit HKLM OpenXR registration
-through UAC, CMake Vulkan header fallback through `Vulkan-Headers`, vcpkg manifest fallback for
-Windows static FFmpeg development files, optional installed-runtime companion DLL copying, and a
-`scripts/windows_configure.ps1` helper for Visual Studio/Ninja configure environments. Qt Home and
-the Qt simulator reuse the Xcode app icon assets and open as GUI-subsystem apps on Windows. The Android VR client now feeds
+are in place. Windows OpenGL/WGL is still follow-up work, while Qt Home has Windows install/launch
+support, explicit HKLM OpenXR registration through UAC, CMake Vulkan header fallback through
+`Vulkan-Headers`, vcpkg manifest fallback for Windows static FFmpeg development files, optional
+installed-runtime companion DLL copying, and a `scripts/windows_configure.ps1` helper for
+Visual Studio/Ninja configure environments. Qt Home and the Qt simulator reuse the Xcode app icon
+assets and open as GUI-subsystem apps on Windows. The Android VR client now feeds
 real `XR_EXT_hand_tracking` joints into the runtime, gates controller poses with explicit active flags,
 keeps hand-interaction bindings available alongside active controllers with controller-first priority,
 supports WiFi UDP and USB ADB reverse TCP streaming, matches per-frame render poses for headset
-compositor reprojection, recenters incoming streaming poses around the first headset pose for each
-client session, requests the server-selected display refresh rate, enables preset-driven dynamic
-`XR_FB_foveation` when the headset supports it, and supports the Quest shader path for
-foveated-encoding decompression plus edge-aware upscaling. The visionOS
-viewer now starts from a minimal floating search window, enters immersive VR automatically when the
-stream connects, and sends head pose, hand joints, and first-pass tracked accessory controller data
+compositor reprojection, reuses short decode/network gaps through configurable client reprojection
+with conservative optional pose warp, shows a local headset shell with status text, reset,
+controller lasers, hand laser/pinch input, visible hand-joint markers, a simple 3D grid, and
+optional `XR_FB_passthrough` while waiting for
+video, decodes negotiated H.264/H.265 streams while preferring H.265, requests the server-selected display refresh rate, enables preset-driven
+dynamic `XR_FB_foveation` when the headset supports it, and supports the Quest shader path for
+foveated-encoding decompression plus edge-aware upscaling. ABR full mode can reconfigure encoded
+stream resolution over USB TCP through protocol v1.2 `StreamConfigUpdate/Ack` when the client
+supports it, without resizing the OpenXR application's swapchains, and the passthrough feature can keep Quest passthrough
+active during negotiated MR streaming while local shell GL resources are released.
+Runtime video sends now run behind a
+bounded encoded-frame sender queue so socket backpressure does not run inside VideoToolbox callbacks,
+the Quest client drains MediaCodec output off the XR frame loop, and the runtime ABR controller
+uses client latency, displayed frame age, keyframe requests, send/encoder drops, and reprojection
+pressure to adjust bitrate with sliding windows and hysteresis. The shared Apple streaming client
+path and visionOS viewer decode negotiated H.264/H.265 streams while preferring H.265. The visionOS
+viewer now starts from a compact floating control window for server search, explicit connection,
+optional automatic immersive entry, default hidden-window immersive mode with return-to-menu
+immersive re-entry/disconnect controls, optional keep-window-visible behavior, visible-hands
+upper-limb control, and head pose, hand joints, and first-pass tracked accessory controller data
 while the immersive space is open. The macOS SwiftUI Home app now targets direct notarized
 distribution so it can scan known apps, launch compatible apps with the user-selected
 `XR_RUNTIME_JSON`, register that selected runtime, and capture app logs.
 The Home app shows a main-window runtime activity summary from
 `~/Library/Application Support/OXRSys/runtime_status.json`, including idle/streaming state,
-transport, connected device family, active OpenXR application, WiFi/USB transport readiness, and
-per-app custom ADB path selection for USB setup. Home streaming controls include the shared
-runtime 1-200 Mbps bitrate bounds, server-selected refresh rate, encoder preset, foveated encoding
-preset, headset foveation preset, Quest shader upscaling, and reserved headset-audio configuration;
+transport, connected device family, active OpenXR application, WiFi/USB transport readiness,
+first-launch runtime registration guidance, one-step USB reverse setup, SDK-free native USB ADB
+setup in the SwiftUI Home app, Settings-based Internal/Custom ADB selection, native ADB-server protocol support with external `adb` fallback, and per-app custom ADB path selection for USB setup. Home streaming controls include the shared
+runtime 1-200 Mbps bitrate bounds with effective client-cap telemetry, server-selected refresh rate, video codec, encoder preset, foveated encoding
+preset with active/inactive status, ABR/dynamic-resolution mode, mixed reality, occlusion, spatial toggles, and a separate Headset Client section for client foveation override,
+Quest shader upscaling, client reprojection, and reserved headset-audio configuration;
 clients can send `ClientConnect.maxBitrateMbps = 0` to use the server-configured bitrate without
 adding a client-side cap.
 The Home app can enable a Developer tab from its Settings tab, open the macOS simulator in a
 same-process window backed by the shared `OXRSysSimulator` Swift package, and show live runtime
 streaming statistics from the existing telemetry path. The Qt Home Developer tab opens the shared
 Qt simulator widget in a dedicated window with UDP video preview, mouse-driven synthetic head
-tracking, explicit FFmpeg-disabled fallback, frame-loss/FEC status, and keyframe recovery requests.
+tracking, simulator-owned vertical FOV sent through tracking eye-FOV metadata, explicit
+FFmpeg-disabled fallback, H.264/H.265 decode selection, frame-loss/FEC status, and keyframe recovery requests.
 The macOS package helper builds the runtime dylib and Home app into one local folder with a complete
 `runtime/` directory; the distribution helper signs that package, creates a combined archive, and can
 submit that archive for notarization with Apple Developer account credentials.
@@ -60,6 +79,7 @@ As of March 17, 2026, the pinned non-interactive OpenXR-CTS baseline is fully gr
 - Core C++ dependencies are fetched via CMake FetchContent; Qt, optional local FFmpeg packages, optional Vulkan SDKs, and platform SDKs are system/toolchain dependencies. Windows uses vcpkg manifest mode for static FFmpeg by default via `scripts/windows_configure.ps1`; pass `-DynamicFFmpeg` only when dynamic FFmpeg DLLs are desired.
 - Product versions are centralized in `config/OXRSysVersion.xcconfig`; do not hardcode
   marketing versions or build numbers in CMake, Xcode, Gradle, or native client code.
+- Commit messages must read naturally, must not mention Codex, and must never include `[codex]`.
 - All source code and documentation must be in English
 - Project-owned source code is licensed under MPL-2.0; preserve SPDX headers and keep third-party code under its upstream license.
 
@@ -86,8 +106,20 @@ Avoid duplicating the same guidance in multiple files. If commands, platform sta
 - Streaming encoders must honor each projection view's submitted `XrSwapchainSubImage.imageRect`
   before packing the side-by-side headset video frame.
 - Metal streaming must snapshot dynamic swapchain images through the app-provided command queue and GPU-side shared-event waits; if no staging slot is safe to reuse, drop that streaming frame instead of reading a live reused swapchain slot.
-- Quest USB streaming uses reconnecting ADB reverse TCP on localhost ports `9944`, `9945`, and `9946`; app-level Android USB permission dialogs are only for `UsbManager`-visible devices and are not required for ADB reverse streaming. Home must keep a previously verified reverse setup usable if a later ADB poll temporarily stops reporting the headset after the VR app enters immersive mode.
-- Quest USB TCP sockets must keep bounded send behavior; failed video sends must clear stale TCP dispatch state and must not block the encode callback or `Session::EndFrame()`.
+- Vulkan streaming must snapshot released color swapchain layers through app-dispatched Vulkan functions into bounded host-visible staging buffers; wait/map/conversion belongs to the encoder path, not `Session::EndFrame()`.
+- Linux OpenGL streaming is GLX/Xlib-only for now and must use bounded FBO/PBO readback; macOS must not advertise `XR_KHR_opengl_enable` because the extension has no standard CGL binding.
+- Windows D3D11/D3D12 streaming must keep Direct3D headers and code behind Windows-only preprocessor guards; snapshots may enqueue GPU copies during swapchain release, but fence waits, mapping, conversion, and encode must stay outside `Session::EndFrame()`.
+- Quest USB streaming uses reconnecting ADB reverse TCP on localhost ports `9944`, `9945`, `9946`, and the reserved reliable spatial port `9948`; app-level Android USB permission dialogs are only for `UsbManager`-visible devices and are not required for ADB reverse streaming.
+- Home USB setup should prefer the native ADB host-server protocol on `127.0.0.1:5037` when available, fall back to a selected or auto-detected `adb` executable only when needed, configure missing reverse mappings automatically when the user selects USB, keep a previously verified reverse setup usable if a later ADB poll temporarily stops reporting the headset after the VR app enters immersive mode, and keep Settings ADB mode (`Internal`/`Custom`) from silently changing fallback behavior.
+- Quest USB TCP sockets must keep bounded send behavior; failed video sends must clear stale TCP dispatch state and must not block the encoded-frame sender, VideoToolbox callback, or `Session::EndFrame()`.
+- Encoded video dispatch is latest-frame-oriented and bounded; stale queued frames may be dropped instead of building latency when the transport cannot keep up.
+- The advertised per-eye render resolution comes from the `render_device` preset (quest2/quest3/avp). It is fixed when the app queries view configs (before any client connects), so it is a server-config choice, not per-client automatic; `resolution_scale` is a separate encode-only downscale (also driven by ABR), not a render-target change.
+- Video codec negotiation must stay conservative: `ClientConnect.supportedCodecs = 0` means a legacy H.265-only client, H.265 remains the default, and H.264 must only be selected for clients that explicitly advertise H.264 support.
+- 10-bit streaming is HEVC Main10 only: enable it only for H.265 when `encoder_10bit` is configured and the client advertises `CLIENT_CAPABILITY_TEN_BIT_ENCODING`; H.264 and legacy clients must remain 8-bit.
+- Apple VideoToolbox streams use a BT.709 SDR, limited-range YCbCr color contract. Keep encoder metadata and client conversion aligned, including exact normalized code ranges for 8-bit and 10-bit bi-planar decoder surfaces.
+- `ServerAnnounce.clientSharpeningPercent` (0-100, a repurposed reserved slot) carries the headset sharpen strength from the server's `client_sharpening` config; the visionOS client applies it as a display-space contrast-adaptive sharpen pass. Keep the C++/Swift announce layout in sync (ProtocolLayoutTests).
+- The visionOS client advertises `CLIENT_CAPABILITY_FOVEATED_ENCODING` and inverse-warps the AADT layout in the fragment shader from the announce's foveation parameters (center size/shift, edge ratio, and the derived eye-size ratio). The client un-warp must stay the exact inverse of the server's `compress_axis` warp (runtime/src/VideoEncoder.mm) or the image distorts; visionOS uses a closed-form inverse verified to fp32 round-trip precision against that warp — re-verify numerically if either side's math changes.
+- The Apple VideoToolbox decode path is latency-first: prefer the hardware decoder (`Enable`, not `Require`, so session creation can never hard-fail), set `kVTDecompressionPropertyKey_RealTime`, and never combine it with `MaximizePowerEfficiency`; NAL splitting must scan the frame in place rather than copying the whole buffer into an array.
 - Runtime-managed Quest logcat capture is optional and disabled by default; if enabled, clearing the headset log before capture must remain bounded/best-effort and must not block runtime startup or tests.
 - Headset refresh rate is selected by the server config/Home, requested by the Quest client through `XR_FB_display_refresh_rate`, and negotiated back from the active client rate.
 - The Quest Android client still uses the build-time `OXRSYS_PREFERRED_DISPLAY_REFRESH_RATE_HZ` value as a fallback before a server is discovered.
@@ -95,11 +127,16 @@ Avoid duplicating the same guidance in multiple files. If commands, platform sta
 - Runtime-consumed streaming poses are relative to the first valid headset pose of each streaming
   client session; do not apply absolute headset room-space poses directly to OpenXR app spaces.
 - Headset clients must match `VIDEO_FLAG_RENDER_POSE` metadata to the decoded frame before projection submission.
-- Server-side foveated encoding uses the ALVR-style AADT transform on the async Metal encode path only; clients without `CLIENT_CAPABILITY_FOVEATED_ENCODING` must not receive distorted video.
+- Quest client reprojection must stay bounded: use exact render-pose matches first, only fall back to recent monotone render poses, disable image-space pose warp on old frames, strong translation, missing pose, recovery, or repeated stale reuse, and keep all work on the GLES/EGL GPU path.
+- ABR must avoid oscillation: lower bitrate quickly on latency/loss/reprojection pressure, recover slowly through hysteresis, and do not raise bitrate/resolution while displayed frame age or reprojection pressure is high. Dynamic resolution only changes the encoded streaming size, never the OpenXR application's swapchain size, and live decoder reconfiguration is limited to reliable USB TCP until WiFi has a safe reliable control path.
+- Server-side foveated encoding uses the ALVR-style AADT transform on the async Metal encode path only; write AADT output through a Metal compute pass into a private GPU scratch texture before blitting into VideoToolbox pixel buffers, keep it fail-closed when layout/source dimensions are not coherent, and do not send distorted video to clients without `CLIENT_CAPABILITY_FOVEATED_ENCODING`.
 - Quest shader upscaling and foveated-encoding decompression must preserve render-pose matching and keep the plain bilinear path working when the server flags are off.
+- Quest decoder input buffers must keep bounded headroom above `encodedWidth * encodedHeight`; foveated encoding can shrink encoded dimensions while high-bitrate IDR frames remain large.
 - Headset speaker audio has protocol/config scaffolding only until a real capture/playback path is attached; do not advertise `SERVER_FEATURE_HEADSET_AUDIO` without that pipeline.
 - UDP FEC uses the existing 24-byte `VideoPacketHeader` padding to carry the final data packet size for each FEC group; clients must use it only when recovering the last packet in that group.
 - Quest hand tracking depends on the Android manifest permission `com.oculus.permission.HAND_TRACKING` and the optional `oculus.software.handtracking` feature.
+- Quest passthrough shell mode depends on `XR_FB_passthrough` support and the optional Android feature `com.oculus.feature.PASSTHROUGH`; streaming video remains the priority display path. The Android client must advertise `CLIENT_CAPABILITY_MIXED_REALITY_PASSTHROUGH` only after the headset runtime reports support and passthrough objects are created, and runtime status must distinguish `passthrough_enabled`, `passthrough_supported`, and `passthrough_ready`. Streaming disables the local passthrough underlay and releases local shell GL resources unless effective passthrough is active; Quest clients must not use black-key alpha by default for ordinary dark pixels, and any transparent-clear compatibility fallback must be explicit.
+- OpenXR environment blend mode support is snapshotted at instance creation; `passthrough_enabled` only enables the headset underlay, while `app_alpha_blend_passthrough` is the explicit opt-in for advertising `XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND` to apps. Changing the alpha opt-in requires restarting the OpenXR app/runtime session to change advertised blend modes.
 - Streaming controller poses are valid only when `TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE` or `TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE` is present; missing controller flags must not overwrite the last valid runtime pose.
 - The action system is profile-aware and must not regress to hard-forcing `KHR simple_controller`.
 - `xrLocateSpacesKHR` is accepted as an alias of the OpenXR 1.1 `xrLocateSpaces` entry point.
@@ -110,7 +147,7 @@ Avoid duplicating the same guidance in multiple files. If commands, platform sta
   macOS `~/Library/Application Support/OXRSys/oxrsys-runtime.toml`,
   Linux `${XDG_CONFIG_HOME:-~/.config}/oxrsys/oxrsys-runtime.toml`,
   Windows `%APPDATA%/OXRSys/oxrsys-runtime.toml`.
-- Qt Home transport readiness and USB ADB reverse configuration run asynchronously on a worker; keep slow process calls off the UI thread and ignore stale worker results after path, serial, or transport changes.
+- Qt Home transport readiness and USB ADB reverse configuration run asynchronously on a worker; keep slow process calls off the UI thread and ignore stale worker results after ADB mode, path, serial, or transport changes.
 
 ## Project Layout
 
@@ -149,6 +186,7 @@ oxrsys_runtime/
 │   ├── TestRuntimePlatform.cpp
 │   ├── TestStreamingFrameQueue.cpp
 │   ├── TestVulkanDispatch.cpp
+│   ├── TestWindowsD3D.cpp
 │   ├── HomeLauncherTests.swift
 │   ├── TestProtocolLayout.cpp
 │   ├── TestRuntimeStatus.cpp
@@ -206,6 +244,9 @@ ctest --test-dir build/windows-arm64 --output-on-failure
 ```
 
 Optional CTS lane:
+
+On macOS, install the Xcode Metal Toolchain first (`xcodebuild -downloadComponent MetalToolchain`);
+the CTS sub-build receives the resolved `metal` and `metallib` paths during CMake configuration.
 
 ```bash
 cmake -B build_cts -G Ninja -DCMAKE_BUILD_TYPE=Debug -DOXRSYS_ENABLE_CTS=ON

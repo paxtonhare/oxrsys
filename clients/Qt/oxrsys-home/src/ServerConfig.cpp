@@ -52,6 +52,31 @@ bool isFoveationPreset(const QString& value)
     return value == "off" || value == "light" || value == "medium" || value == "high";
 }
 
+bool isClientFoveationPreset(const QString& value)
+{
+    return value == "auto" || isFoveationPreset(value);
+}
+
+bool isClientReprojection(const QString& value)
+{
+    return value == "off" || value == "pose" || value == "pose_warp";
+}
+
+bool isAbrMode(const QString& value)
+{
+    return value == "off" || value == "bitrate" || value == "full";
+}
+
+bool isVideoCodec(const QString& value)
+{
+    return value == "h265" || value == "h264" || value == "auto";
+}
+
+bool isOcclusionMode(const QString& value)
+{
+    return value == "off" || value == "scene_mesh" || value == "environment_depth";
+}
+
 QString stringValue(const QString& key, const QString& text)
 {
     QString value = rawValue(key, text);
@@ -161,6 +186,53 @@ QString upsertSection(QString text,
     return lines.join('\n');
 }
 
+QString removeSectionKeys(QString text, const QString& sectionName, const QStringList& keys)
+{
+    QStringList lines = text.split('\n');
+    const QString sectionHeader = QString("[%1]").arg(sectionName);
+
+    int sectionIndex = -1;
+    for (int i = 0; i < lines.size(); ++i)
+    {
+        if (lines.at(i).trimmed() == sectionHeader)
+        {
+            sectionIndex = i;
+            break;
+        }
+    }
+    if (sectionIndex < 0)
+    {
+        return text;
+    }
+
+    int sectionEnd = lines.size();
+    for (int i = sectionIndex + 1; i < lines.size(); ++i)
+    {
+        if (isSectionHeader(lines.at(i)))
+        {
+            sectionEnd = i;
+            break;
+        }
+    }
+
+    for (int i = sectionEnd - 1; i > sectionIndex; --i)
+    {
+        for (const QString& key : keys)
+        {
+            if (matchesKey(key, lines.at(i)))
+            {
+                lines.removeAt(i);
+                if (i - 1 > sectionIndex && lines.at(i - 1).contains("Rendering FOV"))
+                {
+                    lines.removeAt(i - 1);
+                }
+                break;
+            }
+        }
+    }
+    return lines.join('\n');
+}
+
 } // namespace
 
 QString ServerConfig::defaultText()
@@ -177,16 +249,31 @@ QString ServerConfig::defaultText()
         "\n"
         "[streaming]\n"
         "bitrate_mbps = 50\n"
-        "fov_degrees = 100\n"
         "refresh_rate_hz = 72\n"
         "resolution_scale = 0.75\n"
+        "dynamic_resolution_min_scale = 0.50\n"
+        "render_device = \"quest3\"\n"
         "keyframe_interval_sec = 2\n"
+        "video_codec = \"h265\"\n"
         "encoder_preset = \"balanced\"\n"
+        "encoder_10bit = false\n"
         "transport = \"auto\"\n"
         "foveated_encoding_preset = \"off\"\n"
-        "client_foveation_preset = \"medium\"\n"
+        "client_foveation_preset = \"auto\"\n"
         "client_upscaling = false\n"
+        "client_sharpening = 0.0\n"
+        "client_reprojection = \"pose\"\n"
+        "abr_mode = \"bitrate\"\n"
+        "passthrough_enabled = false\n"
+        "app_alpha_blend_passthrough = false\n"
+        "occlusion_mode = \"off\"\n"
         "headset_audio = false\n"
+        "\n"
+        "[spatial]\n"
+        "enabled = false\n"
+        "anchors = false\n"
+        "scene = false\n"
+        "persistence = false\n"
         "\n"
         "[logging]\n"
         "file_logging = true\n"
@@ -211,12 +298,6 @@ ServerConfig ServerConfig::parse(const QString& text)
         config.bitrateMbps = bitrate;
     }
 
-    const int fov = rawValue("fov_degrees", text).toInt(&ok);
-    if (ok && fov >= 60 && fov <= 150)
-    {
-        config.fovDegrees = fov;
-    }
-
     const int refreshRate = rawValue("refresh_rate_hz", text).toInt(&ok);
     if (ok && isSupportedRefreshRate(refreshRate))
     {
@@ -229,6 +310,19 @@ ServerConfig ServerConfig::parse(const QString& text)
         config.resolutionScale = resolutionScale;
     }
 
+    const double dynamicResolutionMinScale =
+        rawValue("dynamic_resolution_min_scale", text).toDouble(&ok);
+    if (ok && dynamicResolutionMinScale >= 0.25 && dynamicResolutionMinScale <= 1.0)
+    {
+        config.dynamicResolutionMinScale = dynamicResolutionMinScale;
+    }
+
+    const QString renderDevice = stringValue("render_device", text);
+    if (renderDevice == "quest2" || renderDevice == "quest3" || renderDevice == "avp")
+    {
+        config.renderDevice = renderDevice;
+    }
+
     const int keyframeInterval = rawValue("keyframe_interval_sec", text).toInt(&ok);
     if (ok && keyframeInterval >= 1 && keyframeInterval <= 10)
     {
@@ -239,6 +333,18 @@ ServerConfig ServerConfig::parse(const QString& text)
     if (preset == "quality" || preset == "balanced" || preset == "speed")
     {
         config.encoderPreset = preset;
+    }
+
+    const bool encoder10Bit = boolValue("encoder_10bit", text, &ok);
+    if (ok)
+    {
+        config.encoder10Bit = encoder10Bit;
+    }
+
+    const QString videoCodec = stringValue("video_codec", text);
+    if (isVideoCodec(videoCodec))
+    {
+        config.videoCodec = videoCodec;
     }
 
     const QString transportValue = stringValue("transport", text);
@@ -254,7 +360,7 @@ ServerConfig ServerConfig::parse(const QString& text)
     }
 
     const QString clientFoveationPreset = stringValue("client_foveation_preset", text);
-    if (isFoveationPreset(clientFoveationPreset))
+    if (isClientFoveationPreset(clientFoveationPreset))
     {
         config.clientFoveationPreset = clientFoveationPreset;
     }
@@ -265,10 +371,82 @@ ServerConfig ServerConfig::parse(const QString& text)
         config.clientUpscaling = clientUpscaling;
     }
 
+    const double clientSharpening = rawValue("client_sharpening", text).toDouble(&ok);
+    if (ok && clientSharpening >= 0.0 && clientSharpening <= 1.0)
+    {
+        config.clientSharpening = clientSharpening;
+    }
+
+    const QString clientReprojection = stringValue("client_reprojection", text);
+    if (isClientReprojection(clientReprojection))
+    {
+        config.clientReprojection = clientReprojection;
+    }
+
+    const QString abrMode = stringValue("abr_mode", text);
+    if (isAbrMode(abrMode))
+    {
+        config.abrMode = abrMode;
+    }
+
+    const bool passthroughEnabled = boolValue("passthrough_enabled", text, &ok);
+    const bool hasPassthroughEnabled = ok;
+    if (ok)
+    {
+        config.passthroughEnabled = passthroughEnabled;
+    }
+
+    const bool appAlphaBlendPassthrough = boolValue("app_alpha_blend_passthrough", text, &ok);
+    const bool hasAppAlphaBlendPassthrough = ok;
+    if (ok)
+    {
+        config.appAlphaBlendPassthrough = appAlphaBlendPassthrough;
+    }
+
+    const QString mixedRealityMode = stringValue("mixed_reality_mode", text);
+    if (mixedRealityMode == "passthrough" || mixedRealityMode == "alpha" || mixedRealityMode == "off")
+    {
+        if (!hasPassthroughEnabled)
+        {
+            config.passthroughEnabled = mixedRealityMode != "off";
+        }
+        if (!hasAppAlphaBlendPassthrough)
+        {
+            config.appAlphaBlendPassthrough = mixedRealityMode == "alpha";
+        }
+    }
+
+    const QString occlusionMode = stringValue("occlusion_mode", text);
+    if (isOcclusionMode(occlusionMode))
+    {
+        config.occlusionMode = occlusionMode;
+    }
+
     const bool headsetAudio = boolValue("headset_audio", text, &ok);
     if (ok)
     {
         config.headsetAudio = headsetAudio;
+    }
+
+    const bool spatialEnabled = boolValue("enabled", text, &ok);
+    if (ok)
+    {
+        config.spatialEnabled = spatialEnabled;
+    }
+    const bool spatialAnchors = boolValue("anchors", text, &ok);
+    if (ok)
+    {
+        config.spatialAnchors = spatialAnchors;
+    }
+    const bool spatialScene = boolValue("scene", text, &ok);
+    if (ok)
+    {
+        config.spatialScene = spatialScene;
+    }
+    const bool spatialPersistence = boolValue("persistence", text, &ok);
+    if (ok)
+    {
+        config.spatialPersistence = spatialPersistence;
     }
 
     const bool fileLogging = boolValue("file_logging", text, &ok);
@@ -293,22 +471,41 @@ QString ServerConfig::mergedInto(const QString& currentText) const
     {
         text = defaultText().trimmed();
     }
+    text = removeSectionKeys(text, "streaming", QStringList{
+        QStringLiteral("fov_degrees"),
+        QStringLiteral("mixed_reality_mode"),
+    });
 
     text = upsertSection(text, "general", {
         {"runtime_enabled", boolString(runtimeEnabled)},
     });
     text = upsertSection(text, "streaming", {
         {"bitrate_mbps", QString::number(bitrateMbps)},
-        {"fov_degrees", QString::number(fovDegrees)},
         {"refresh_rate_hz", QString::number(refreshRateHz)},
         {"resolution_scale", decimalString(resolutionScale)},
+        {"dynamic_resolution_min_scale", decimalString(dynamicResolutionMinScale)},
+        {"render_device", QString("\"%1\"").arg(renderDevice)},
         {"keyframe_interval_sec", QString::number(keyframeIntervalSec)},
+        {"video_codec", QString("\"%1\"").arg(videoCodec)},
         {"encoder_preset", QString("\"%1\"").arg(encoderPreset)},
+        {"encoder_10bit", boolString(encoder10Bit)},
         {"transport", QString("\"%1\"").arg(transport)},
         {"foveated_encoding_preset", QString("\"%1\"").arg(foveatedEncodingPreset)},
         {"client_foveation_preset", QString("\"%1\"").arg(clientFoveationPreset)},
         {"client_upscaling", boolString(clientUpscaling)},
+        {"client_sharpening", decimalString(clientSharpening)},
+        {"client_reprojection", QString("\"%1\"").arg(clientReprojection)},
+        {"abr_mode", QString("\"%1\"").arg(abrMode)},
+        {"passthrough_enabled", boolString(passthroughEnabled)},
+        {"app_alpha_blend_passthrough", boolString(appAlphaBlendPassthrough)},
+        {"occlusion_mode", QString("\"%1\"").arg(occlusionMode)},
         {"headset_audio", boolString(headsetAudio)},
+    });
+    text = upsertSection(text, "spatial", {
+        {"enabled", boolString(spatialEnabled)},
+        {"anchors", boolString(spatialAnchors)},
+        {"scene", boolString(spatialScene)},
+        {"persistence", boolString(spatialPersistence)},
     });
     text = upsertSection(text, "logging", {
         {"file_logging", boolString(fileLogging)},
@@ -331,6 +528,19 @@ QString encoderPresetDisplayName(const QString& value)
     return "Balanced";
 }
 
+QString videoCodecDisplayName(const QString& value)
+{
+    if (value == "h264")
+    {
+        return "H.264";
+    }
+    if (value == "auto")
+    {
+        return "Auto";
+    }
+    return "H.265";
+}
+
 QString transportDisplayName(const QString& value)
 {
     if (value == "wifi")
@@ -346,6 +556,10 @@ QString transportDisplayName(const QString& value)
 
 QString foveationPresetDisplayName(const QString& value)
 {
+    if (value == "auto")
+    {
+        return "Auto";
+    }
     if (value == "light")
     {
         return "Light";
@@ -357,6 +571,45 @@ QString foveationPresetDisplayName(const QString& value)
     if (value == "high")
     {
         return "High";
+    }
+    return "Off";
+}
+
+QString clientReprojectionDisplayName(const QString& value)
+{
+    if (value == "off")
+    {
+        return "Off";
+    }
+    if (value == "pose_warp")
+    {
+        return "Pose Warp";
+    }
+    return "Pose";
+}
+
+QString abrModeDisplayName(const QString& value)
+{
+    if (value == "off")
+    {
+        return "Off";
+    }
+    if (value == "full")
+    {
+        return "Full";
+    }
+    return "Bitrate";
+}
+
+QString occlusionModeDisplayName(const QString& value)
+{
+    if (value == "scene_mesh")
+    {
+        return "Scene Mesh";
+    }
+    if (value == "environment_depth")
+    {
+        return "Environment Depth";
     }
     return "Off";
 }

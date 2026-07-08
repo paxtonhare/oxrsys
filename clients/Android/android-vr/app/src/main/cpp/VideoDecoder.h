@@ -9,6 +9,8 @@
 #include <media/NdkImage.h>
 #include <media/NdkImageReader.h>
 #include <mutex>
+#include <oxrsys/protocol/Protocol.h>
+#include <thread>
 
 struct ANativeWindow;
 struct AHardwareBuffer;
@@ -17,7 +19,7 @@ namespace oxr
 {
 
 /**
- * Hardware H.265 video decoder using Android MediaCodec.
+ * Hardware video decoder using Android MediaCodec.
  *
  * Receives NAL units from the network, feeds them to the hardware decoder,
  * and outputs decoded frames via AImageReader → AHardwareBuffer for zero-copy
@@ -36,12 +38,12 @@ public:
     VideoDecoder(const VideoDecoder&) = delete;
     VideoDecoder& operator=(const VideoDecoder&) = delete;
 
-    bool Initialize(uint32_t width, uint32_t height);
+    bool Initialize(uint32_t width, uint32_t height, protocol::VideoCodec codec);
     void Shutdown();
 
-    // Feed an H.265 NAL unit to the decoder
+    // Feed an encoded video NAL unit to the decoder.
     bool SubmitNalUnit(const uint8_t* data, size_t size, int64_t presentationTimeUs,
-                       int64_t receiveTimeNs);
+                       int64_t receiveTimeNs, bool alphaBlend);
 
     // Decoded frame providing an AHardwareBuffer for GPU rendering
     struct DecodedFrame
@@ -59,6 +61,7 @@ public:
         int64_t localSubmitTimeNs = 0;
         int64_t localAcquireTimeNs = 0;
         uint32_t skippedFramesBeforeAcquire = 0;
+        bool alphaBlend = false;
     };
 
     // Get the next decoded frame (returns false if no frame ready).
@@ -67,6 +70,7 @@ public:
     void ReleaseFrame();
 
     bool IsInitialized() const { return codec_ != nullptr; }
+    protocol::VideoCodec GetCodec() const { return activeCodec_; }
 
     uint32_t GetWidth() const { return width_; }
     uint32_t GetHeight() const { return height_; }
@@ -78,17 +82,24 @@ private:
         int64_t presentationTimeUs = 0;
         int64_t receiveTimeNs = 0;
         int64_t submitTimeNs = 0;
+        bool alphaBlend = false;
     };
 
     // Dequeue all available output buffers and render them to the surface
-    uint32_t FlushOutputToSurface();
-    void RememberSubmittedFrame(int64_t presentationTimeUs, int64_t receiveTimeNs, int64_t submitTimeNs);
+    uint32_t FlushOutputToSurface(int64_t timeoutUs);
+    void OutputThreadMain();
+    void RememberSubmittedFrame(int64_t presentationTimeUs, int64_t receiveTimeNs, int64_t submitTimeNs,
+                                bool alphaBlend);
     bool ConsumeSubmittedFrameMetadata(int64_t presentationTimeUs, PendingFrameMetadata* outMetadata);
 
     AMediaCodec* codec_ = nullptr;
+    protocol::VideoCodec activeCodec_ = protocol::VideoCodec::H265;
     AImageReader* imageReader_ = nullptr;
     ANativeWindow* outputWindow_ = nullptr;     // Owned by AImageReader, do not release
     AImage* currentImage_ = nullptr;
+    std::thread outputThread_;
+    std::atomic<bool> outputThreadRunning_{false};
+    std::atomic<uint32_t> outputFramesReleasedSinceAcquire_{0};
 
     uint32_t width_ = 0;
     uint32_t height_ = 0;

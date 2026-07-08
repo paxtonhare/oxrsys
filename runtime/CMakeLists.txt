@@ -19,20 +19,60 @@ set(OXRSYS_RUNTIME_SOURCES
     src/VulkanDispatch.cpp
 )
 
+set(OXRSYS_VIDEO_ENCODER "AUTO" CACHE STRING "Runtime video encoder: AUTO, VIDEOTOOLBOX, or FFMPEG")
+set_property(CACHE OXRSYS_VIDEO_ENCODER PROPERTY STRINGS AUTO VIDEOTOOLBOX FFMPEG)
+string(TOUPPER "${OXRSYS_VIDEO_ENCODER}" OXRSYS_VIDEO_ENCODER_NORMALIZED)
+if(NOT OXRSYS_VIDEO_ENCODER_NORMALIZED MATCHES "^(AUTO|VIDEOTOOLBOX|FFMPEG)$")
+    message(FATAL_ERROR "OXRSYS_VIDEO_ENCODER must be AUTO, VIDEOTOOLBOX, or FFMPEG")
+endif()
+
+set(OXRSYS_RUNTIME_NEEDS_FFMPEG OFF)
+set(OXRSYS_RUNTIME_ENABLE_OPENGL OFF)
+
 if(APPLE)
     list(APPEND OXRSYS_RUNTIME_SOURCES
-        src/Swapchain.mm
-        src/VideoEncoder.mm
-    )
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
-    list(APPEND OXRSYS_RUNTIME_SOURCES
+        src/SwapchainCommon.cpp
         src/SwapchainVulkan.cpp
+        src/SwapchainMetal.mm
+    )
+    if(OXRSYS_VIDEO_ENCODER_NORMALIZED STREQUAL "FFMPEG")
+        list(APPEND OXRSYS_RUNTIME_SOURCES
+            src/FfmpegVideoEncoder.cpp
+        )
+        set(OXRSYS_RUNTIME_NEEDS_FFMPEG ON)
+    else()
+        list(APPEND OXRSYS_RUNTIME_SOURCES
+            src/VideoEncoder.mm
+        )
+    endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(OXRSYS_VIDEO_ENCODER_NORMALIZED STREQUAL "VIDEOTOOLBOX")
+        message(FATAL_ERROR "OXRSYS_VIDEO_ENCODER=VIDEOTOOLBOX is only supported on Apple platforms")
+    endif()
+    list(APPEND OXRSYS_RUNTIME_SOURCES
+        src/SwapchainCommon.cpp
+        src/SwapchainVulkan.cpp
+        src/SwapchainOpenGL.cpp
         src/FfmpegVideoEncoder.cpp
     )
+    set(OXRSYS_RUNTIME_NEEDS_FFMPEG ON)
+    set(OXRSYS_RUNTIME_ENABLE_OPENGL ON)
+elseif(WIN32)
+    if(OXRSYS_VIDEO_ENCODER_NORMALIZED STREQUAL "VIDEOTOOLBOX")
+        message(FATAL_ERROR "OXRSYS_VIDEO_ENCODER=VIDEOTOOLBOX is only supported on Apple platforms")
+    endif()
+    list(APPEND OXRSYS_RUNTIME_SOURCES
+        src/SwapchainCommon.cpp
+        src/SwapchainVulkan.cpp
+        src/SwapchainD3D11.cpp
+        src/SwapchainD3D12.cpp
+        src/FfmpegVideoEncoder.cpp
+    )
+    set(OXRSYS_RUNTIME_NEEDS_FFMPEG ON)
 else()
     message(FATAL_ERROR
-        "The ${CMAKE_SYSTEM_NAME} runtime backend is scaffold-only in this pass. "
-        "Use macOS or Linux for runtime builds."
+        "The ${CMAKE_SYSTEM_NAME} runtime backend is not supported in this pass. "
+        "Use macOS, Linux, or Windows for runtime builds."
     )
 endif()
 
@@ -40,41 +80,32 @@ add_library(oxrsys_runtime SHARED
     ${OXRSYS_RUNTIME_SOURCES}
 )
 
+if(OXRSYS_RUNTIME_ENABLE_OPENGL)
+    find_package(OpenGL REQUIRED)
+    find_package(X11 REQUIRED)
+endif()
+
 set(OXRSYS_RUNTIME_LINK_LIBRARIES
     spdlog::spdlog
     glm::glm
     ${CMAKE_DL_LIBS}
 )
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-        libavcodec
-        libavutil
-        libswscale
-    )
-    list(APPEND OXRSYS_RUNTIME_LINK_LIBRARIES
-        PkgConfig::FFMPEG
-    )
-elseif(WIN32)
+if(OXRSYS_RUNTIME_NEEDS_FFMPEG)
     include(${CMAKE_SOURCE_DIR}/cmake/ResolveFFmpeg.cmake)
+
     list(APPEND OXRSYS_RUNTIME_LINK_LIBRARIES
         ${OXRSYS_FFMPEG_LIBRARIES}
+    )
+endif()
+
+if(WIN32)
+    list(APPEND OXRSYS_RUNTIME_LINK_LIBRARIES
         d3d11
         d3d12
         dxgi
         ws2_32
     )
-    if(NOT OXRSYS_FFMPEG_BINARY_DIR)
-        file(GLOB _oxrsys_stale_ffmpeg_runtime_dlls
-            "${CMAKE_CURRENT_BINARY_DIR}/avcodec*.dll"
-            "${CMAKE_CURRENT_BINARY_DIR}/avutil*.dll"
-            "${CMAKE_CURRENT_BINARY_DIR}/swscale*.dll"
-        )
-        if(_oxrsys_stale_ffmpeg_runtime_dlls)
-            file(REMOVE ${_oxrsys_stale_ffmpeg_runtime_dlls})
-        endif()
-    endif()
 endif()
 
 target_include_directories(oxrsys_runtime PRIVATE
@@ -83,42 +114,46 @@ target_include_directories(oxrsys_runtime PRIVATE
     ${openxr_SOURCE_DIR}/include
     ${openxr_SOURCE_DIR}/src/common
     ${OXRSYS_VULKAN_INCLUDE_DIRS}
+    ${OXRSYS_FFMPEG_INCLUDE_DIRS}
 )
 
-if(WIN32)
-    target_include_directories(oxrsys_runtime PRIVATE
-        ${OXRSYS_FFMPEG_INCLUDE_DIRS}
+if(OXRSYS_FFMPEG_LIBRARY_DIRS)
+    target_link_directories(oxrsys_runtime PRIVATE
+        ${OXRSYS_FFMPEG_LIBRARY_DIRS}
     )
-    if(OXRSYS_FFMPEG_LIBRARY_DIRS)
-        target_link_directories(oxrsys_runtime PRIVATE
-            ${OXRSYS_FFMPEG_LIBRARY_DIRS}
-        )
-    endif()
 endif()
 
 target_compile_definitions(oxrsys_runtime PRIVATE
     XR_USE_GRAPHICS_API_VULKAN
+    OXRSYS_USE_VULKAN
     OXRSYS_VERSION_MAJOR=${OXRSYS_VERSION_MAJOR}
     OXRSYS_VERSION_MINOR=${OXRSYS_VERSION_MINOR}
     OXRSYS_VERSION_PATCH=${OXRSYS_VERSION_PATCH}
 )
 
-if(WIN32)
-    target_compile_definitions(oxrsys_runtime PRIVATE
-        XR_USE_GRAPHICS_API_D3D11
-        XR_USE_GRAPHICS_API_D3D12
-    )
-endif()
-
 if(APPLE)
     target_compile_definitions(oxrsys_runtime PRIVATE
         XR_USE_GRAPHICS_API_METAL
+        OXRSYS_USE_METAL
+    )
+endif()
+
+if(OXRSYS_RUNTIME_ENABLE_OPENGL)
+    target_compile_definitions(oxrsys_runtime PRIVATE
+        XR_USE_GRAPHICS_API_OPENGL
+        XR_USE_PLATFORM_XLIB
+        OXRSYS_USE_OPENGL_XLIB
+        GL_GLEXT_PROTOTYPES
     )
 endif()
 
 if(WIN32)
     target_compile_definitions(oxrsys_runtime PRIVATE
         XR_USE_PLATFORM_WIN32
+        XR_USE_GRAPHICS_API_D3D11
+        XR_USE_GRAPHICS_API_D3D12
+        OXRSYS_USE_D3D11
+        OXRSYS_USE_D3D12
         WIN32_LEAN_AND_MEAN
         NOMINMAX
     )
@@ -131,6 +166,13 @@ endif()
 target_link_libraries(oxrsys_runtime PRIVATE
     ${OXRSYS_RUNTIME_LINK_LIBRARIES}
 )
+
+if(OXRSYS_RUNTIME_ENABLE_OPENGL)
+    target_link_libraries(oxrsys_runtime PRIVATE
+        OpenGL::GL
+        X11::X11
+    )
+endif()
 
 if(APPLE)
     target_link_libraries(oxrsys_runtime PRIVATE
@@ -150,22 +192,19 @@ set_target_properties(oxrsys_runtime PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
     OUTPUT_NAME oxrsys-runtime
+    PREFIX "lib"
 )
-
-if(WIN32)
-    set_target_properties(oxrsys_runtime PROPERTIES
-        PREFIX ""
-    )
-else()
-    set_target_properties(oxrsys_runtime PROPERTIES
-        PREFIX "lib"
-    )
-endif()
 
 if(APPLE)
     set_target_properties(oxrsys_runtime PROPERTIES
         OBJCXX_VISIBILITY_PRESET hidden
         SUFFIX ".dylib"
+    )
+endif()
+
+if(WIN32)
+    set_target_properties(oxrsys_runtime PROPERTIES
+        PREFIX ""
     )
 endif()
 

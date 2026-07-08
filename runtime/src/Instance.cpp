@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "Instance.h"
+#include "Config.h"
 #include "Runtime.h"
 #include <algorithm>
 #include <cstring>
 #include <spdlog/spdlog.h>
 
 Instance::Instance(XrVersion apiVersion, const std::vector<std::string>& enabledExtensions)
-    : apiVersion_(apiVersion), enabledExtensions_(enabledExtensions)
+    : apiVersion_(apiVersion),
+      enabledExtensions_(enabledExtensions),
+      passthroughBlendModeEnabled_([] {
+          const ConfigValues values = Config::Get().GetValues();
+          return values.passthroughEnabled && values.appAlphaBlendPassthrough;
+      }())
 {
     Runtime::Get().RegisterHandle(handle_, this);
     Runtime::Get().SetInstance(this);
@@ -171,13 +177,17 @@ XrResult Instance::EnumerateViewConfigurationViews(XrSystemId systemId,
         return XR_ERROR_SIZE_INSUFFICIENT;
     }
 
+    uint32_t recommendedWidth = 0;
+    uint32_t recommendedHeight = 0;
+    RenderBaseEyeResolution(recommendedWidth, recommendedHeight);
+
     for (uint32_t i = 0; i < 2; i++)
     {
         views[i].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
         views[i].next = nullptr;
-        views[i].recommendedImageRectWidth = EyeWidth;
+        views[i].recommendedImageRectWidth = recommendedWidth;
         views[i].maxImageRectWidth = 4096;
-        views[i].recommendedImageRectHeight = EyeHeight;
+        views[i].recommendedImageRectHeight = recommendedHeight;
         views[i].maxImageRectHeight = 4096;
         views[i].recommendedSwapchainSampleCount = 1;
         views[i].maxSwapchainSampleCount = 1;
@@ -205,17 +215,24 @@ XrResult Instance::EnumerateEnvironmentBlendModes(XrSystemId systemId,
         return XR_ERROR_VALIDATION_FAILURE;
     }
 
-    *environmentBlendModeCountOutput = 1;
+    const bool alphaBlendEnabled = SupportsPassthroughBlendMode();
+    const uint32_t supportedModeCount = alphaBlendEnabled ? 2u : 1u;
+
+    *environmentBlendModeCountOutput = supportedModeCount;
     if (environmentBlendModeCapacityInput == 0)
     {
         return XR_SUCCESS;
     }
-    if (environmentBlendModeCapacityInput < 1)
+    if (environmentBlendModeCapacityInput < supportedModeCount)
     {
         return XR_ERROR_SIZE_INSUFFICIENT;
     }
 
     environmentBlendModes[0] = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    if (alphaBlendEnabled)
+    {
+        environmentBlendModes[1] = XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND;
+    }
     return XR_SUCCESS;
 }
 
@@ -266,8 +283,7 @@ bool Instance::IsExtensionEnabled(const char* extensionName) const
 
 bool Instance::SupportsLocalFloor() const
 {
-    return apiVersion_ >= XR_MAKE_VERSION(1, 1, 0) ||
-           IsExtensionEnabled(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME);
+    return apiVersion_ >= XR_MAKE_VERSION(1, 1, 0);
 }
 
 bool Instance::IsSystemIdValid(XrSystemId systemId) const
@@ -293,6 +309,16 @@ void Instance::MarkVulkanGraphicsRequirementsQueried()
 bool Instance::HasQueriedVulkanGraphicsRequirements() const
 {
     return vulkanGraphicsRequirementsQueried_;
+}
+
+void Instance::MarkOpenGLGraphicsRequirementsQueried()
+{
+    openGLGraphicsRequirementsQueried_ = true;
+}
+
+bool Instance::HasQueriedOpenGLGraphicsRequirements() const
+{
+    return openGLGraphicsRequirementsQueried_;
 }
 
 void Instance::MarkD3D11GraphicsRequirementsQueried()

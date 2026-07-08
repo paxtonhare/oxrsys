@@ -41,11 +41,12 @@ The Qt simulator includes a synthetic IPD and left-eye FOV in its tracking packe
 render with the same streaming eye-data path used by headset clients.
 
 The Qt simulator uses the same UDP discovery, video, control, and tracking ports. With FFmpeg
-development libraries available at build time, the Qt widget decodes the H.265 stream into its
-preview surface. That surface is also the interaction target for click, drag, scroll, keyboard focus,
-and mouse capture. If no decoded frame is available yet, it shows a synthetic pose preview with a
-`Waiting for video` status. If FFmpeg was not enabled, it shows `Video preview unavailable: FFmpeg
-support was not enabled` and keeps synthetic tracking available.
+development libraries available at build time, the Qt widget advertises H.265 and H.264 support and
+decodes the selected stream into its preview surface. That surface is also the interaction target
+for click, drag, scroll, keyboard focus, and mouse capture. If no decoded frame is available yet, it
+shows a synthetic pose preview with a `Waiting for video` status. If FFmpeg was not enabled, it
+shows `Video preview unavailable: FFmpeg support was not enabled` and keeps synthetic tracking
+available.
 
 The Qt video path uses an internal UDP frame assembler with duplicate-packet filtering, partial-frame
 timeouts, existing XOR FEC recovery, dropped-frame counters, and keyframe requests after repeated
@@ -56,6 +57,7 @@ The settings sheet also lets you:
 
 - switch between `Simulator` and `StereoView` where supported
 - toggle streaming stats
+- tune the simulator vertical FOV sent through `TrackingPacket.eyeFov`
 - tune the stereo IPD offset
 - request a keyframe
 - reset device pose in `StereoView` on iOS
@@ -92,6 +94,10 @@ use the streaming protocol.
 | `Escape` | Menu button |
 | `T` | Toggle controller mode or hand tracking mode |
 
+The Apple simulator settings sheet exposes `Vertical FOV` in `Simulator` mode.
+The simulator derives the horizontal FOV from the runtime render aspect when a
+server has been discovered, then sends both angles in each tracking packet.
+
 ## Qt Simulator Controls
 
 | Input | Action |
@@ -106,6 +112,9 @@ use the streaming protocol.
 | `R / E` | Roll head |
 | `F / G` | Left or right grip |
 | `Escape` | Release mouse capture |
+
+The Qt simulator window exposes `Vertical FOV` next to the runtime/tracking
+panels. It uses the same `TrackingPacket.eyeFov` path as the Apple simulator.
 
 ## Limitations
 

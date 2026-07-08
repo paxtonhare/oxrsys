@@ -18,6 +18,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QSlider>
 #include <QTimer>
 #include <QUdpSocket>
 #include <QVBoxLayout>
@@ -73,6 +74,36 @@ QString ffmpegErrorString(int error)
     return "FFmpeg support is not enabled";
 #endif
 }
+
+#if OXRSYS_QT_SIMULATOR_HAS_FFMPEG
+AVCodecID avCodecId(oxr::protocol::VideoCodec codec)
+{
+    switch (codec)
+    {
+        case oxr::protocol::VideoCodec::H264:
+            return AV_CODEC_ID_H264;
+        case oxr::protocol::VideoCodec::H265:
+            return AV_CODEC_ID_HEVC;
+        case oxr::protocol::VideoCodec::AV1:
+        default:
+            return AV_CODEC_ID_NONE;
+    }
+}
+
+QString videoCodecDisplayName(oxr::protocol::VideoCodec codec)
+{
+    switch (codec)
+    {
+        case oxr::protocol::VideoCodec::H264:
+            return "H.264";
+        case oxr::protocol::VideoCodec::AV1:
+            return "AV1";
+        case oxr::protocol::VideoCodec::H265:
+        default:
+            return "H.265";
+    }
+}
+#endif
 
 QLabel* makeSecondaryLabel(const QString& text, QWidget* parent)
 {
@@ -329,6 +360,11 @@ SimulatorWidget::SimulatorWidget(QWidget* parent)
     connect(searchButton_, &QPushButton::clicked, this, &SimulatorWidget::startDiscovery);
     connect(connectButton_, &QPushButton::clicked, this, &SimulatorWidget::connectToDiscoveredRuntime);
     connect(disconnectButton_, &QPushButton::clicked, this, &SimulatorWidget::disconnectFromRuntime);
+    connect(simulatorFovSlider_, &QSlider::valueChanged, this, [this](int value) {
+        simulatorFovDegrees_ = value;
+        simulatorFovValueLabel_->setText(QString("%1 deg").arg(value));
+        updateTelemetrySummary();
+    });
     connect(discoverySocket_, &QUdpSocket::readyRead, this, &SimulatorWidget::readPendingDiscoveryDatagrams);
     connect(videoSocket_, &QUdpSocket::readyRead, this, &SimulatorWidget::readPendingVideoDatagrams);
     connect(trackingTimer_, &QTimer::timeout, this, &SimulatorWidget::sendTrackingSample);
@@ -472,6 +508,9 @@ void SimulatorWidget::connectToDiscoveredRuntime()
     connectPacket.versionMajor = 1;
     connectPacket.versionMinor = 0;
     connectPacket.preferredCodec = static_cast<uint32_t>(oxr::protocol::VideoCodec::H265);
+    connectPacket.supportedCodecs =
+        oxr::protocol::CLIENT_CODEC_CAPABILITY_H265 |
+        oxr::protocol::CLIENT_CODEC_CAPABILITY_H264;
     connectPacket.maxBitrateMbps = oxr::protocol::CLIENT_MAX_BITRATE_USE_SERVER_CONFIG;
     connectPacket.refreshRateHz = std::max<uint32_t>(discoveredServer_.refreshRateHz, 60);
     const QByteArray deviceName = platformSimulatorDeviceName().toUtf8();
@@ -584,6 +623,23 @@ void SimulatorWidget::buildUi()
     telemetryLabel_->setWordWrap(true);
     telemetryLayout->addWidget(telemetryLabel_);
     detailsLayout->addWidget(telemetryPanel, 1);
+
+    auto* simulatorPanel = makePanel(this);
+    auto* simulatorLayout = new QVBoxLayout(simulatorPanel);
+    simulatorLayout->addWidget(makeSecondaryLabel("Simulator", simulatorPanel));
+    auto* fovRow = new QHBoxLayout();
+    auto* fovLabel = new QLabel("Vertical FOV", simulatorPanel);
+    simulatorFovSlider_ = new QSlider(Qt::Horizontal, simulatorPanel);
+    simulatorFovSlider_->setRange(60, 150);
+    simulatorFovSlider_->setValue(simulatorFovDegrees_);
+    simulatorFovValueLabel_ = new QLabel(QString("%1 deg").arg(simulatorFovDegrees_), simulatorPanel);
+    simulatorFovValueLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    simulatorFovValueLabel_->setMinimumWidth(56);
+    fovRow->addWidget(fovLabel);
+    fovRow->addWidget(simulatorFovSlider_, 1);
+    fovRow->addWidget(simulatorFovValueLabel_);
+    simulatorLayout->addLayout(fovRow);
+    detailsLayout->addWidget(simulatorPanel, 1);
     rootLayout->addLayout(detailsLayout, 1);
 
     auto* buttonLayout = new QHBoxLayout();
@@ -795,7 +851,26 @@ void SimulatorWidget::fillTrackingPacket(oxr::protocol::TrackingPacket& packet) 
         trackingPose_,
         pressedKeys_,
         monotonicNowNs(),
+        static_cast<float>(simulatorFovDegrees_),
+        simulatorPerEyeAspect(),
         packet);
+}
+
+float SimulatorWidget::simulatorPerEyeAspect() const
+{
+    if (discoveredServer_.renderWidth > 0 && discoveredServer_.renderHeight > 0)
+    {
+        return std::max(0.1f,
+                        static_cast<float>(discoveredServer_.renderWidth) * 0.5f /
+                            static_cast<float>(discoveredServer_.renderHeight));
+    }
+    if (discoveredServer_.encodedWidth > 0 && discoveredServer_.encodedHeight > 0)
+    {
+        return std::max(0.1f,
+                        static_cast<float>(discoveredServer_.encodedWidth) * 0.5f /
+                            static_cast<float>(discoveredServer_.encodedHeight));
+    }
+    return 1.0f;
 }
 
 bool SimulatorWidget::startVideoReceiver()
@@ -833,7 +908,7 @@ bool SimulatorWidget::startVideoReceiver()
                      .arg(videoSocket_->errorString()));
         return false;
     }
-    return ensureVideoDecoder();
+    return ensureVideoDecoder(oxr::protocol::VideoCodec::H265);
 #endif
 }
 
@@ -974,21 +1049,33 @@ int64_t SimulatorWidget::monotonicNowNs() const
 }
 
 #if OXRSYS_QT_SIMULATOR_HAS_FFMPEG
-bool SimulatorWidget::ensureVideoDecoder()
+bool SimulatorWidget::ensureVideoDecoder(oxr::protocol::VideoCodec codec)
 {
-    if (videoDecoder_ != nullptr)
+    if (videoDecoder_ != nullptr && decoderCodec_ == codec)
     {
         return true;
     }
-
-    const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
-    if (codec == nullptr)
+    if (videoDecoder_ != nullptr)
     {
-        setState(State::Discovered, "H.265 decoder not found");
+        resetVideoDecoder();
+    }
+
+    const AVCodecID codecId = avCodecId(codec);
+    if (codecId == AV_CODEC_ID_NONE)
+    {
+        setState(State::Discovered, videoCodecDisplayName(codec) + " decoder is not supported");
         return false;
     }
 
-    videoDecoder_ = avcodec_alloc_context3(codec);
+    const AVCodec* avCodec = avcodec_find_decoder(codecId);
+    if (avCodec == nullptr)
+    {
+        setState(State::Discovered, videoCodecDisplayName(codec) + " decoder not found");
+        return false;
+    }
+
+    decoderCodec_ = codec;
+    videoDecoder_ = avcodec_alloc_context3(avCodec);
     decodedFrame_ = av_frame_alloc();
     decodePacket_ = av_packet_alloc();
     if (videoDecoder_ == nullptr || decodedFrame_ == nullptr || decodePacket_ == nullptr)
@@ -998,12 +1085,12 @@ bool SimulatorWidget::ensureVideoDecoder()
         return false;
     }
 
-    const int result = avcodec_open2(videoDecoder_, codec, nullptr);
+    const int result = avcodec_open2(videoDecoder_, avCodec, nullptr);
     if (result < 0)
     {
         const QString error = ffmpegErrorString(result);
         resetVideoDecoder();
-        setState(State::Discovered, "Failed to open H.265 decoder: " + error);
+        setState(State::Discovered, "Failed to open " + videoCodecDisplayName(codec) + " decoder: " + error);
         return false;
     }
     return true;
@@ -1028,11 +1115,12 @@ void SimulatorWidget::resetVideoDecoder()
     {
         avcodec_free_context(&videoDecoder_);
     }
+    decoderCodec_ = oxr::protocol::VideoCodec::H265;
 }
 
 bool SimulatorWidget::decodeVideoFrame(const AssembledVideoFrame& frame)
 {
-    if (!ensureVideoDecoder() || frame.nalUnit.isEmpty())
+    if (!ensureVideoDecoder(frame.codec) || frame.nalUnit.isEmpty())
     {
         return false;
     }
@@ -1171,7 +1259,7 @@ void SimulatorWidget::updateTelemetrySummary()
         return;
     }
 
-    telemetryLabel_->setText(QString("%1 tracking packets sent\n%2 video packets, %3 frames, %4 drops, %5 fec, %6 decode errors\nHead pose: %7, %8, %9\nYaw/pitch: %10 / %11 deg\nIPD: 0.064 m")
+    telemetryLabel_->setText(QString("%1 tracking packets sent\n%2 video packets, %3 frames, %4 drops, %5 fec, %6 decode errors\nHead pose: %7, %8, %9\nYaw/pitch: %10 / %11 deg\nIPD: 0.064 m  FOV: %12 deg")
                                  .arg(trackingPacketsSent_)
                                  .arg(videoPacketsReceived_)
                                  .arg(videoFramesDecoded_)
@@ -1182,7 +1270,8 @@ void SimulatorWidget::updateTelemetrySummary()
                                  .arg(trackingPose_.headPosition[1], 0, 'f', 2)
                                  .arg(trackingPose_.headPosition[2], 0, 'f', 2)
                                  .arg(radiansToDegrees(trackingPose_.yaw), 0, 'f', 1)
-                                 .arg(radiansToDegrees(trackingPose_.pitch), 0, 'f', 1));
+                                 .arg(radiansToDegrees(trackingPose_.pitch), 0, 'f', 1)
+                                 .arg(simulatorFovDegrees_));
 }
 
 QString SimulatorWidget::discoveredServerName() const

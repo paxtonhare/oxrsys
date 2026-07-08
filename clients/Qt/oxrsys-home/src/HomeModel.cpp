@@ -10,6 +10,7 @@
 #include <QProcessEnvironment>
 #include <QPointer>
 #include <QThread>
+#include <QStringList>
 
 #include <algorithm>
 #include <utility>
@@ -19,6 +20,32 @@ namespace
 
 constexpr int MaxLogCharacters = 30000;
 constexpr int MaxRuntimeStatsSamples = 60;
+
+bool shouldDropApplicationLogLine(const QString& line)
+{
+    static const QStringList ignoredSystemNoiseMarkers = {
+        QStringLiteral("com.apple.linkd.autoShortcut"),
+        QStringLiteral("Error registering app with intents framework"),
+        QStringLiteral("Unable to obtain a task name port right for pid"),
+    };
+    static const QSet<QString> ignoredSystemNoiseLines = {
+        QStringLiteral("Will NOT re-try to establish the connection"),
+    };
+
+    if (ignoredSystemNoiseLines.contains(line.trimmed()))
+    {
+        return true;
+    }
+
+    for (const QString& marker : ignoredSystemNoiseMarkers)
+    {
+        if (line.contains(marker))
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 QDateTime modificationDate(const QString& path)
 {
@@ -44,6 +71,16 @@ QString cleanedPath(QString path)
         }
     }
     return path;
+}
+
+QString normalizedAdbMode(const QString& mode)
+{
+    return mode == "custom" ? "custom" : "internal";
+}
+
+QString customAdbPathRequiredMessage()
+{
+    return "Select or enter a custom ADB executable path, or switch ADB mode back to Internal.";
 }
 
 bool containsUsableDevice(const QList<AdbDevice>& devices, const QString& serial)
@@ -75,6 +112,18 @@ QString portsText(const QSet<int>& ports)
     return portsText(sorted);
 }
 
+bool hasAllReversePorts(const QSet<int>& ports)
+{
+    for (int port : AdbBridge::reversePorts())
+    {
+        if (!ports.contains(port))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 struct WifiReadiness
 {
     bool ready = true;
@@ -86,6 +135,7 @@ struct TransportRefreshResult
     int requestId = 0;
     bool validateUsbSelection = false;
     bool reverseMappingsVerified = false;
+    QString adbMode;
     QString adbPath;
     QString requestedSerial;
     WifiReadiness wifi;
@@ -99,6 +149,7 @@ struct TransportRefreshResult
 struct UsbConfigureResult
 {
     int requestId = 0;
+    QString adbMode;
     QString adbPath;
     QString selectedSerial;
     AdbStatus adbStatus;
@@ -135,18 +186,6 @@ QString processOutput(const QString& program,
         return {};
     }
     return stdoutText;
-}
-
-bool hasRequiredReversePorts(const QSet<int>& ports)
-{
-    for (int port : AdbBridge::reversePorts())
-    {
-        if (!ports.contains(port))
-        {
-            return false;
-        }
-    }
-    return true;
 }
 
 WifiReadiness wifiReadinessStatus()
@@ -222,6 +261,7 @@ QList<AdbDevice> usableDevices(const QList<AdbDevice>& devices)
 }
 
 TransportRefreshResult collectTransportRefresh(int requestId,
+                                               QString adbMode,
                                                QString adbPath,
                                                QString requestedSerial,
                                                bool validateUsbSelection)
@@ -229,9 +269,16 @@ TransportRefreshResult collectTransportRefresh(int requestId,
     TransportRefreshResult result;
     result.requestId = requestId;
     result.validateUsbSelection = validateUsbSelection;
+    result.adbMode = normalizedAdbMode(adbMode);
     result.adbPath = std::move(adbPath);
     result.requestedSerial = std::move(requestedSerial);
     result.wifi = wifiReadinessStatus();
+    if (result.adbMode == "custom" && cleanedPath(result.adbPath).isEmpty())
+    {
+        result.adbStatus = {QString(), customAdbPathRequiredMessage()};
+        result.usbStatus = result.adbStatus.message;
+        return result;
+    }
     result.adbStatus = AdbBridge::status(result.adbPath);
 
     if (!result.adbStatus.isAvailable())
@@ -250,14 +297,18 @@ TransportRefreshResult collectTransportRefresh(int requestId,
     }
 
     const QList<AdbDevice> usable = usableDevices(result.devices);
-    if (result.requestedSerial.isEmpty() ||
-        !containsUsableDevice(usable, result.requestedSerial))
+    if (!result.requestedSerial.isEmpty() &&
+        containsUsableDevice(usable, result.requestedSerial))
     {
-        result.selectedSerial = usable.isEmpty() ? QString() : usable.first().serial;
+        result.selectedSerial = result.requestedSerial;
+    }
+    else if (usable.size() == 1)
+    {
+        result.selectedSerial = usable.first().serial;
     }
     else
     {
-        result.selectedSerial = result.requestedSerial;
+        result.selectedSerial.clear();
     }
 
     if (!result.selectedSerial.isEmpty())
@@ -281,6 +332,10 @@ TransportRefreshResult collectTransportRefresh(int requestId,
     {
         result.usbStatus = "ADB sees device(s), but none are authorized for reverse tunneling.";
     }
+    else if (usable.size() > 1 && result.selectedSerial.isEmpty())
+    {
+        result.usbStatus = "Multiple Quest devices found; select one before configuring USB.";
+    }
     else
     {
         result.usbStatus =
@@ -296,13 +351,21 @@ TransportRefreshResult collectTransportRefresh(int requestId,
 }
 
 UsbConfigureResult collectUsbConfigure(int requestId,
+                                       QString adbMode,
                                        QString adbPath,
                                        QString selectedSerial)
 {
     UsbConfigureResult result;
     result.requestId = requestId;
+    result.adbMode = normalizedAdbMode(adbMode);
     result.adbPath = std::move(adbPath);
     result.selectedSerial = std::move(selectedSerial);
+    if (result.adbMode == "custom" && cleanedPath(result.adbPath).isEmpty())
+    {
+        result.adbStatus = {QString(), customAdbPathRequiredMessage()};
+        result.error = result.adbStatus.message;
+        return result;
+    }
     result.adbStatus = AdbBridge::status(result.adbPath);
     if (!result.adbStatus.isAvailable())
     {
@@ -329,7 +392,7 @@ TransportReadiness questUsbTransportReadiness(const AdbStatus& adbStatus,
 {
     const QList<int> expectedPorts = AdbBridge::reversePorts();
     const bool reverseReady = !selectedSerial.isEmpty() &&
-        hasRequiredReversePorts(reversePorts);
+        hasAllReversePorts(reversePorts);
     if (reverseReady)
     {
         if (!adbStatus.isAvailable())
@@ -372,6 +435,27 @@ TransportReadiness questUsbTransportReadiness(const AdbStatus& adbStatus,
                 .arg(missingPorts.size() > 1 ? "s" : "", portsText(missingPorts))};
 }
 
+QString filteredApplicationLogText(const QString& text)
+{
+    const QStringList lines = text.split('\n', Qt::KeepEmptyParts);
+    QStringList filtered;
+    filtered.reserve(lines.size());
+    for (int index = 0; index < lines.size(); ++index)
+    {
+        const QString& line = lines[index];
+        if (index == lines.size() - 1 && line.isEmpty())
+        {
+            filtered.append(line);
+            continue;
+        }
+        if (!shouldDropApplicationLogLine(line))
+        {
+            filtered.append(line);
+        }
+    }
+    return filtered.join('\n');
+}
+
 HomeModel::HomeModel(QObject* parent,
                      const QString& settingsOrganization,
                      const QString& settingsApplication,
@@ -396,6 +480,8 @@ HomeModel::HomeModel(QObject* parent,
     preferInstalledRuntimeForLaunches_ =
         settings_.value("preferInstalledRuntimeForLaunches", false).toBool();
     customAdbPath_ = cleanedPath(settings_.value("customAdbPath").toString());
+    adbMode_ = normalizedAdbMode(
+        settings_.value("adbMode", customAdbPath_.isEmpty() ? "internal" : "custom").toString());
     if (transportChecksEnabled_)
     {
         transportWorkerThread_ = new QThread(this);
@@ -532,6 +618,11 @@ const AdbStatus& HomeModel::adbStatus() const
     return adbStatus_;
 }
 
+QString HomeModel::adbMode() const
+{
+    return adbMode_;
+}
+
 QString HomeModel::customAdbPath() const
 {
     return customAdbPath_;
@@ -568,6 +659,10 @@ QString HomeModel::currentProfileAppDisplayName() const
 
 QString HomeModel::mainTransportSelection() const
 {
+    if (!pendingMainTransportSelection_.isEmpty())
+    {
+        return pendingMainTransportSelection_;
+    }
     if (!mainTransportOverride_.isEmpty())
     {
         return mainTransportOverride_;
@@ -595,6 +690,19 @@ TransportReadiness HomeModel::mainTransportReadiness() const
     if (mainTransportSelection() == "wifi")
     {
         return {wifiReady_, false, wifiStatus_};
+    }
+
+    if (transportRefreshPending_ && !pendingMainTransportSelection_.isEmpty())
+    {
+        return {false, false, "Checking USB ADB transport..."};
+    }
+    if (usbConfigurePending_)
+    {
+        return {false, false, "Configuring USB ADB reverse..."};
+    }
+    if (adbMode_ == "custom" && customAdbPath_.isEmpty())
+    {
+        return {false, false, customAdbPathRequiredMessage()};
     }
 
     return questUsbTransportReadiness(adbStatus_,
@@ -661,6 +769,11 @@ void HomeModel::setDeveloperModeEnabled(bool enabled)
 
 void HomeModel::setSelectedQuestUsbSerial(const QString& serial)
 {
+    ++nextTransportRequestId_;
+    latestTransportRefreshRequestId_ = nextTransportRequestId_;
+    latestUsbConfigureRequestId_ = nextTransportRequestId_;
+    transportRefreshPending_ = false;
+    usbConfigurePending_ = false;
     selectedQuestUsbSerial_ = serial;
     selectedQuestUsbReversePorts_.clear();
     questUsbStatus_ = selectedQuestUsbSerial_.isEmpty()
@@ -670,8 +783,46 @@ void HomeModel::setSelectedQuestUsbSerial(const QString& serial)
     emit changed();
 }
 
+void HomeModel::setAdbMode(const QString& mode)
+{
+    const QString normalizedMode = normalizedAdbMode(mode);
+    if (adbMode_ == normalizedMode)
+    {
+        return;
+    }
+
+    adbMode_ = normalizedMode;
+    settings_.setValue("adbMode", adbMode_);
+    if (adbMode_ == "custom" && customAdbPath_.isEmpty())
+    {
+        customAdbPath_ = AdbBridge::resolveExecutablePath();
+        if (!customAdbPath_.isEmpty())
+        {
+            settings_.setValue("customAdbPath", customAdbPath_);
+        }
+    }
+    selectedQuestUsbSerial_.clear();
+    selectedQuestUsbReversePorts_.clear();
+    ++nextTransportRequestId_;
+    latestTransportRefreshRequestId_ = nextTransportRequestId_;
+    latestUsbConfigureRequestId_ = nextTransportRequestId_;
+    transportRefreshPending_ = false;
+    usbConfigurePending_ = false;
+    questUsbDevices_.clear();
+    adbStatus_ = adbMode_ == "custom" && customAdbPath_.isEmpty()
+        ? AdbStatus{QString(), customAdbPathRequiredMessage()}
+        : AdbStatus{};
+    questUsbStatus_ = adbStatus_.message;
+    refreshTransportHealth(true);
+    setStatusMessage(adbMode_ == "custom"
+                         ? "Using custom ADB executable."
+                         : "Using internal ADB setup.");
+}
+
 void HomeModel::setCustomAdbPath(const QString& path)
 {
+    adbMode_ = "custom";
+    settings_.setValue("adbMode", adbMode_);
     customAdbPath_ = cleanedPath(path);
     if (customAdbPath_.isEmpty())
     {
@@ -683,15 +834,49 @@ void HomeModel::setCustomAdbPath(const QString& path)
     }
     selectedQuestUsbSerial_.clear();
     selectedQuestUsbReversePorts_.clear();
+    ++nextTransportRequestId_;
+    latestTransportRefreshRequestId_ = nextTransportRequestId_;
+    latestUsbConfigureRequestId_ = nextTransportRequestId_;
+    transportRefreshPending_ = false;
+    usbConfigurePending_ = false;
+    questUsbDevices_.clear();
     refreshTransportHealth(true);
     setStatusMessage(customAdbPath_.isEmpty()
-                         ? "ADB will be auto-detected."
+                         ? "Select a custom ADB executable."
                          : "Selected custom ADB executable.");
+}
+
+void HomeModel::prefillCustomAdbPathFromDetectedExecutable()
+{
+    adbMode_ = "custom";
+    settings_.setValue("adbMode", adbMode_);
+    const QString detectedPath = AdbBridge::resolveExecutablePath();
+    if (!detectedPath.isEmpty())
+    {
+        setCustomAdbPath(detectedPath);
+        setStatusMessage("Detected ADB executable.");
+        return;
+    }
+    setStatusMessage("No external ADB executable was detected.");
+    emit changed();
 }
 
 void HomeModel::clearCustomAdbPath()
 {
-    setCustomAdbPath(QString());
+    adbMode_ = "internal";
+    settings_.setValue("adbMode", adbMode_);
+    customAdbPath_.clear();
+    settings_.remove("customAdbPath");
+    selectedQuestUsbSerial_.clear();
+    selectedQuestUsbReversePorts_.clear();
+    ++nextTransportRequestId_;
+    latestTransportRefreshRequestId_ = nextTransportRequestId_;
+    latestUsbConfigureRequestId_ = nextTransportRequestId_;
+    transportRefreshPending_ = false;
+    usbConfigurePending_ = false;
+    questUsbDevices_.clear();
+    refreshTransportHealth(true);
+    setStatusMessage("Using internal ADB setup.");
 }
 
 void HomeModel::setSelectedLogAppId(const QString& appId)
@@ -705,6 +890,7 @@ void HomeModel::setMainTransportSelection(const QString& transport)
     if (transport == "usb_adb")
     {
         pendingMainTransportSelection_ = transport;
+        mainTransportOverride_ = transport;
         questUsbStatus_ = "Checking USB ADB transport...";
         setStatusMessage("Checking USB ADB transport.");
         requestTransportRefresh(true, true);
@@ -1227,7 +1413,13 @@ void HomeModel::loadConfigFromDisk()
 
 void HomeModel::appendLog(const QString& appId, const QString& text)
 {
-    QString combined = appLogs_.value(appId) + text;
+    const QString filteredText = filteredApplicationLogText(text);
+    if (filteredText.isEmpty())
+    {
+        return;
+    }
+
+    QString combined = appLogs_.value(appId) + filteredText;
     if (combined.size() > MaxLogCharacters)
     {
         combined = combined.right(MaxLogCharacters);
@@ -1295,13 +1487,15 @@ void HomeModel::requestTransportRefresh(bool force, bool validateUsbSelection)
         ? "Checking USB ADB transport..."
         : "Checking USB ADB devices...";
 
-    const QString adbPath = customAdbPath_;
+    const QString adbMode = adbMode_;
+    const QString adbPath = adbMode_ == "custom" ? customAdbPath_ : QString();
     const QString requestedSerial = selectedQuestUsbSerial_;
     QPointer<HomeModel> model(this);
     QMetaObject::invokeMethod(transportWorker_,
-                              [model, requestId, adbPath, requestedSerial, validateUsbSelection]() {
+                              [model, requestId, adbMode, adbPath, requestedSerial, validateUsbSelection]() {
                                   const TransportRefreshResult result =
                                       collectTransportRefresh(requestId,
+                                                              adbMode,
                                                               adbPath,
                                                               requestedSerial,
                                                               validateUsbSelection);
@@ -1316,7 +1510,12 @@ void HomeModel::requestTransportRefresh(bool force, bool validateUsbSelection)
                                           HomeModel* target = model.data();
                                           if (target == nullptr ||
                                               result.requestId !=
-                                                  target->latestTransportRefreshRequestId_)
+                                                  target->latestTransportRefreshRequestId_ ||
+                                              result.adbMode != target->adbMode_ ||
+                                              result.adbPath !=
+                                                  (target->adbMode_ == "custom"
+                                                       ? target->customAdbPath_
+                                                       : QString()))
                                           {
                                               return;
                                           }
@@ -1329,7 +1528,7 @@ void HomeModel::requestTransportRefresh(bool force, bool validateUsbSelection)
                                           const bool keepPreviouslyVerifiedReverse =
                                               !result.reverseMappingsVerified &&
                                               !target->selectedQuestUsbSerial_.isEmpty() &&
-                                              hasRequiredReversePorts(
+                                              hasAllReversePorts(
                                                   target->selectedQuestUsbReversePorts_);
                                           if (keepPreviouslyVerifiedReverse)
                                           {
@@ -1355,20 +1554,38 @@ void HomeModel::requestTransportRefresh(bool force, bool validateUsbSelection)
                                           if (result.validateUsbSelection &&
                                               target->pendingMainTransportSelection_ == "usb_adb")
                                           {
-                                              target->pendingMainTransportSelection_.clear();
                                               const TransportReadiness readiness =
                                                   target->mainTransportReadiness();
-                                              if (readiness.isReady || readiness.canConfigureUsb)
+                                              if (readiness.isReady)
                                               {
+                                                  target->pendingMainTransportSelection_.clear();
                                                   target->mainTransportOverride_ = "usb_adb";
                                                   target->serverConfig_.transport = "usb_adb";
                                                   target->saveStructuredConfig();
                                                   target->setStatusMessage(
                                                       "Selected USB ADB transport.");
                                               }
+                                              else if (readiness.canConfigureUsb)
+                                              {
+                                                  target->requestUsbReverseConfigure();
+                                              }
                                               else
                                               {
-                                                  target->setErrorMessage(readiness.message);
+                                                  target->pendingMainTransportSelection_.clear();
+                                                  if (target->serverConfig_.transport != "usb_adb")
+                                                  {
+                                                      target->mainTransportOverride_.clear();
+                                                  }
+                                                  if (target->selectedQuestUsbSerial_.isEmpty() &&
+                                                      target->adbStatus_.isAvailable())
+                                                  {
+                                                      target->setStatusMessage(
+                                                          "Select a Quest device for USB ADB transport.");
+                                                  }
+                                                  else
+                                                  {
+                                                      target->setErrorMessage(readiness.message);
+                                                  }
                                               }
                                           }
                                           emit target->changed();
@@ -1391,13 +1608,14 @@ void HomeModel::requestUsbReverseConfigure()
     usbConfigurePending_ = true;
     questUsbStatus_ = "Configuring USB ADB reverse...";
 
-    const QString adbPath = customAdbPath_;
+    const QString adbMode = adbMode_;
+    const QString adbPath = adbMode_ == "custom" ? customAdbPath_ : QString();
     const QString selectedSerial = selectedQuestUsbSerial_;
     QPointer<HomeModel> model(this);
     QMetaObject::invokeMethod(transportWorker_,
-                              [model, requestId, adbPath, selectedSerial]() {
+                              [model, requestId, adbMode, adbPath, selectedSerial]() {
                                   const UsbConfigureResult result =
-                                      collectUsbConfigure(requestId, adbPath, selectedSerial);
+                                      collectUsbConfigure(requestId, adbMode, adbPath, selectedSerial);
                                   HomeModel* target = model.data();
                                   if (target == nullptr)
                                   {
@@ -1410,7 +1628,11 @@ void HomeModel::requestUsbReverseConfigure()
                                           if (target == nullptr ||
                                               result.requestId !=
                                                   target->latestUsbConfigureRequestId_ ||
-                                              result.adbPath != target->customAdbPath_ ||
+                                              result.adbMode != target->adbMode_ ||
+                                              result.adbPath !=
+                                                  (target->adbMode_ == "custom"
+                                                       ? target->customAdbPath_
+                                                       : QString()) ||
                                               result.selectedSerial !=
                                                   target->selectedQuestUsbSerial_)
                                           {
@@ -1421,6 +1643,11 @@ void HomeModel::requestUsbReverseConfigure()
                                           target->adbStatus_ = result.adbStatus;
                                           if (!result.error.isEmpty())
                                           {
+                                              target->pendingMainTransportSelection_.clear();
+                                              if (target->serverConfig_.transport != "usb_adb")
+                                              {
+                                                  target->mainTransportOverride_.clear();
+                                              }
                                               target->questUsbStatus_ = result.error;
                                               target->setErrorMessage(target->questUsbStatus_);
                                               return;
@@ -1432,8 +1659,20 @@ void HomeModel::requestUsbReverseConfigure()
                                               QString("Verified adb reverse for %1 on ports %2.")
                                                   .arg(result.selectedSerial,
                                                        portsText(result.reversePorts));
-                                          target->setStatusMessage(
-                                              "Configured Quest USB ADB transport.");
+                                          if (target->pendingMainTransportSelection_ == "usb_adb")
+                                          {
+                                              target->pendingMainTransportSelection_.clear();
+                                              target->mainTransportOverride_ = "usb_adb";
+                                              target->serverConfig_.transport = "usb_adb";
+                                              target->saveStructuredConfig();
+                                              target->setStatusMessage(
+                                                  "Selected USB ADB transport.");
+                                          }
+                                          else
+                                          {
+                                              target->setStatusMessage(
+                                                  "Configured Quest USB ADB transport.");
+                                          }
                                           emit target->changed();
                                       },
                                       Qt::QueuedConnection);

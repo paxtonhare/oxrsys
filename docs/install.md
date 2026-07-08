@@ -10,18 +10,26 @@ Install the base macOS toolchain:
 
 ```bash
 xcode-select --install
-brew install cmake ninja gradle adb-enhanced openjdk@17
+brew install cmake ninja gradle openjdk@17
 ```
 
-Install `adb-enhanced` via Homebrew to get `adb` on the command line in this setup. If `adb` is
-installed elsewhere, both Home apps can store a custom ADB executable path from the Quest USB ADB
-panel. The SwiftUI Home and Qt Home preferences are intentionally separate; clear the custom path to
-return to automatic SDK/Homebrew/PATH detection.
+The macOS SwiftUI Home app does not require Android Studio, the Android SDK, or a Homebrew `adb`
+install for normal Quest USB setup: it can claim the headset USB ADB interface directly, complete
+ADB authentication, and configure reverse mappings itself. External `adb` remains optional for
+diagnostics, logcat, manual server startup, and fallback workflows. Install `adb-enhanced` or
+Android Platform Tools only when you need those command-line tools. If `adb` is installed outside
+the automatic search paths, both Home apps can store a custom ADB executable path from the Quest USB
+ADB panel. The SwiftUI Home and Qt Home preferences are intentionally separate; clear the custom
+path to return to automatic native/server/Homebrew/PATH detection.
 
 Qt frontends need Qt 6 Core, Widgets, and Network. The build helper checks `QTDIR`, `Qt6_DIR`, and
 Qt Online Installer layouts such as `~/Qt/<version>/<kit>` on macOS/Linux and
 `C:\Qt\<version>\<kit>` on Windows. You can also set `CMAKE_PREFIX_PATH` to the kit root, such as
 `C:\Qt\6.11.1\msvc2022_64`, or `Qt6_DIR` to its `lib\cmake\Qt6` directory.
+
+macOS runtime builds use VideoToolbox by default. Install FFmpeg development libraries on macOS
+only if you want to configure the runtime with `-DOXRSYS_VIDEO_ENCODER=FFMPEG` or build the Qt video
+preview path against a Homebrew/MacPorts FFmpeg.
 
 For the Swift/Xcode applications and Swift package Metal shaders, install the full Xcode app, not only the Command Line Tools. Finish first-launch setup after installing or updating Xcode:
 
@@ -37,17 +45,19 @@ Linux runtime and Qt frontend builds need equivalent distro packages for:
 
 - CMake, Ninja, and a C++20 compiler
 - Vulkan headers
+- OpenGL, GLX, and X11 development files
 - FFmpeg development libraries: `libavcodec`, `libavutil`, `libswscale`
 - pkg-config
 - Qt 6 Core, Widgets, and Network
-- adb / Android Platform Tools for USB transport setup
+- adb / Android Platform Tools for starting an ADB server, logcat, and USB fallback setup
 
 On Fedora with RPM Fusion FFmpeg packages installed, use the matching RPM Fusion
 development package:
 
 ```bash
 sudo dnf install cmake ninja-build gcc-c++ pkgconf-pkg-config \
-  vulkan-headers vulkan-loader-devel qt6-qtbase-devel android-tools \
+  vulkan-headers vulkan-loader-devel mesa-libGL-devel libX11-devel \
+  qt6-qtbase-devel android-tools \
   ffmpeg-devel
 ```
 
@@ -95,6 +105,7 @@ Qt packages that match the selected Windows target architecture
 developer environment, or from an IDE that activates the preset architecture.
 Qt Home can also store a custom `adb.exe` path from the Quest USB ADB panel if Platform Tools are
 installed outside `PATH`.
+Windows OpenGL/WGL is not required until that backend is added.
 
 ## Android SDK And NDK
 

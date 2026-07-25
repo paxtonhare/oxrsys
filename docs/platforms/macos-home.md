@@ -146,7 +146,7 @@ idle. The fields are:
 The same header area includes a WiFi/USB selector. Selecting WiFi writes `streaming.transport = "wifi"`
 and shows whether the Mac WiFi interface is powered on. Selecting USB first switches the header into
 USB setup, then checks the selected or single authorized Quest device and automatically configures
-missing reverse mappings on `9944`, `9945`, `9946`, and `9948`. The Home app writes
+missing reverse mappings on `9944`, `9945`, `9946`, `9947`, and `9948`. The Home app writes
 `streaming.transport = "usb_adb"` only after USB validation or reverse setup succeeds. If multiple
 authorized devices are visible, Home asks the user to pick one before configuring reverse mappings.
 If setup fails, Home keeps the previous persisted transport and leaves the USB action available for
@@ -237,9 +237,11 @@ The Headset Client section owns client-side headset options. `client_foveation_p
 does not send an `XR_FB_foveation` override to the headset client; `off`, `light`, `medium`,
 and `high` explicitly override the Quest/PICO viewer swapchains. This is separate from
 foveated encoding and does not change the desktop OpenXR application's rendering work.
-`client_upscaling` enables the Quest shader upscaling path. `headset_audio` is reserved in
-config and protocol, but the runtime does not advertise audio as active until a real
-capture/playback path is attached.
+`client_upscaling` enables the Quest shader upscaling path. `headset_audio` enables speaker-only
+audio on the macOS-to-Quest USB path. ScreenCaptureKit captures only the current OpenXR application
+at 48 kHz stereo, and runtime status reports audio active after capture frames begin. The host
+application may need Screen & System Audio Recording permission on first use. Microphone and WiFi
+audio are not included.
 
 `client_reprojection` controls short missing-frame smoothing on the Quest client. The default
 `pose` reuses a recent decoded texture with the matched server render pose; `pose_warp` additionally
@@ -288,4 +290,4 @@ The runtime reloads config file changes opportunistically:
   encoder/client connection is recreated
 - file logger sink setup still requires a restart
 
-The Settings ADB section detects authorized ADB devices, applies reverse mappings for ports `9944`, `9945`, `9946`, and `9948`, then verifies them through the native USB ADB protocol, the local ADB server protocol, or `adb reverse --list` fallback. USB refresh/setup results are request-scoped so stale results after ADB mode, path, selected device, or transport changes are ignored. If a periodic refresh cannot read reverse mappings for the same still-authorized device, Home preserves previously verified reverse ports instead of flipping the main readiness pill to not ready. This prepares the USB TCP transport and the reserved reliable spatial channel; it is separate from Android `UsbManager` app permission prompts.
+The Settings ADB section detects authorized ADB devices, applies reverse mappings for ports `9944`, `9945`, `9946`, `9947`, and `9948`, then verifies them through the native USB ADB protocol, the local ADB server protocol, or `adb reverse --list` fallback. USB refresh/setup results are request-scoped so stale results after ADB mode, path, selected device, or transport changes are ignored. If a periodic refresh cannot read reverse mappings for the same still-authorized device, Home preserves previously verified reverse ports instead of flipping the main readiness pill to not ready. This prepares the USB TCP transport, speaker audio, and the reserved reliable spatial channel; it is separate from Android `UsbManager` app permission prompts.

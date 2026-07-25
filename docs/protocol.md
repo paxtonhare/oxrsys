@@ -18,7 +18,7 @@ The WiFi transport uses UDP with dedicated ports:
 - Video: `9944`
 - Tracking: `9945`
 - Control: `9946`
-- Audio: `9947` (reserved for headset speaker audio; not advertised until an audio stream is active)
+- Audio: `9947` (48 kHz stereo speaker audio on supported USB clients)
 - Spatial: `9948` (reserved reliable channel for anchors, scene capture, meshes, and larger async spatial results)
 
 Discovery announces the server and its stream settings. Video carries encoded frame fragments. Tracking carries headset and controller state back to the runtime. Control carries latency reports, stream reconfiguration, keyframe requests, and haptics. Spatial is a reliable side channel for future spatial entity and scene data.
@@ -28,6 +28,7 @@ The Quest USB path uses ADB reverse TCP on localhost ports:
 - Video TCP: `9944`
 - Tracking TCP: `9945`
 - Control TCP: `9946`
+- Audio TCP: `9947`
 - Spatial TCP: `9948`
 
 The runtime can run both transports in `auto` mode. `wifi` disables the TCP listeners. `usb_adb` disables WiFi discovery fallback.
@@ -58,13 +59,13 @@ The handshake exposes:
   `ClientConnect.deviceName`
 - preferred codec, supported codec mask, and bitrate limits
 - server feature flags for foveated encoding, client foveation override, client upscaling, stream
-  reconfiguration, passthrough, occlusion, spatial/scene support, and reserved headset audio
+  reconfiguration, passthrough, occlusion, spatial/scene support, and headset audio
 - client capability flags for foveated encoding, client foveation, client upscaling, stream
   reconfiguration, passthrough, occlusion, spatial/scene support, and audio output
 - foveated encoding preset and aligned AADT parameters
 - client foveation override preset and client upscaling mode
 - client reprojection mode
-- audio port and sample rate fields reserved for headset speaker audio
+- negotiated audio port and sample rate fields for headset speaker audio
 
 `ServerAnnounce` is versioned as a 92-byte v1.0 base followed by v1.1 and v1.2 trailing fields.
 `ClientConnect` is versioned as an 80-byte v1.0 base followed by v1.1 trailing fields. Receivers
@@ -230,10 +231,16 @@ the runtime to the client.
 
 ## Audio Stream
 
-The protocol reserves stereo 48 kHz float PCM speaker audio over UDP `AUDIO_PORT` or TCP `Audio`
-records. The wire structs are present so clients and frontends can parse the protocol safely, but the
-runtime does not advertise `SERVER_FEATURE_HEADSET_AUDIO` until a real capture/playback path is
-attached. Microphone input is out of scope for this speaker-only path.
+The active macOS-to-Quest USB path carries stereo 48 kHz float PCM speaker audio in TCP `Audio`
+records on `AUDIO_PORT`. `TcpAudioHeader` supplies the capture presentation timestamp, frame count,
+payload size, sample rate, channel count, and sample format. The runtime advertises
+`SERVER_FEATURE_HEADSET_AUDIO` only when the user enabled `headset_audio` and the USB audio listener
+is available; the client opens playback first and then advertises `CLIENT_CAPABILITY_AUDIO_OUTPUT`.
+Capture starts only after both sides agree on 48 kHz output. Audio has its own bounded sender queue
+and socket so capture, video encode, and `Session::EndFrame()` never wait on headset playback.
+
+This implementation is speaker-only and current-application-only. Microphone input, WiFi/UDP audio,
+non-Apple runtime capture, and compressed audio codecs are out of scope.
 
 ## Session Lifecycle
 
@@ -241,7 +248,7 @@ The expected lifecycle is:
 
 1. The runtime announces itself over UDP, or a USB TCP client connects to control port `9946` and receives `ServerAnnounce`.
 2. A client connects and advertises capabilities.
-3. The runtime starts video, tracking, and optional spatial-channel exchange.
+3. The runtime starts video, tracking, negotiated USB audio, and optional spatial-channel exchange.
 4. The client sends latency feedback, stream config acknowledgements, and keyframe requests while streaming is active.
 5. Either side can disconnect and return to idle. USB TCP shutdown uses a best-effort `Disconnect` record on the control channel before sockets are closed; clients also treat closed video/control sockets as a connection loss and resume discovery/retry.
 

@@ -148,12 +148,15 @@ set(OXRSYS_LOGCAT_TEST_ENV
 )
 
 add_executable(oxrsys_runtime_tests
+    tests/TestAudioTransport.cpp
     tests/TestClientLiveness.cpp
     tests/TestConfig.cpp
     tests/TestFramePacer.cpp
     tests/TestInputManager.cpp
     tests/TestRuntimePlatform.cpp
     tests/TestStreamingAbr.cpp
+    tests/TestAudioPlaybackBuffer.cpp
+    tests/TestStreamingAudioQueue.cpp
     tests/TestStreamingFrameQueue.cpp
     tests/TestStreamingReconfigure.cpp
     tests/TestVulkanDispatch.cpp
@@ -163,11 +166,13 @@ add_executable(oxrsys_runtime_tests
     tests/TestQuestShellInteraction.cpp
     clients/Android/android-vr/app/src/main/cpp/QuestPassthroughAlphaPolicy.cpp
     clients/Android/android-vr/app/src/main/cpp/QuestShellInteraction.cpp
+    clients/Android/android-vr/app/src/main/cpp/AudioPlaybackBuffer.cpp
     runtime/src/InputManager.cpp
     runtime/src/TrackingReceiver.cpp
     runtime/src/Config.cpp
     runtime/src/RuntimePlatform.cpp
     runtime/src/RuntimeSockets.cpp
+    runtime/src/StreamingAudioQueue.cpp
     runtime/src/StreamingFrameQueue.cpp
     runtime/src/VulkanDispatch.cpp
 )

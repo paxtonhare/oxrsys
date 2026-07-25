@@ -12,8 +12,8 @@ Current responsibilities:
   manifest selection model
 - edit the shared runtime TOML keys for streaming, logging, video codec, encoder preset,
   transport, refresh rate, foveation, upscaling, ABR dynamic resolution, mixed reality, occlusion,
-  spatial toggles, and reserved headset-audio configuration
-- detect adb devices and configure Quest USB reverse mappings on ports `9944`, `9945`, `9946`, and `9948`
+  spatial toggles, and headset-audio configuration
+- detect adb devices and configure Quest USB reverse mappings on ports `9944`, `9945`, `9946`, `9947`, and `9948`
 - report macOS WiFi readiness through `networksetup`; Linux keeps the lightweight transport message
 - run WiFi readiness, ADB status, device listing, reverse mapping reads, and reverse mapping
   configuration on a serialized worker thread so slow `adb` or `networksetup` calls do not block
@@ -71,10 +71,10 @@ version. The spatial controls and `9948` reverse mapping remain reserved scaffol
 is attached.
 The Headset Client section owns headset-side options:
 `auto` leaves Quest/PICO `XR_FB_foveation` unmanaged by Home, while `off`, `light`, `medium`,
-and `high` explicitly override the viewer swapchains. Quest shader upscaling and the reserved
-headset-audio toggle live there as well. `client_reprojection` controls Quest/PICO missing-frame
-smoothing with `off`, `pose`, and `pose_warp`. Audio is not reported active by the runtime until a
-real capture/playback stream is implemented.
+and `high` explicitly override the viewer swapchains. Quest shader upscaling and the
+macOS-to-Quest USB headset-audio toggle live there as well. `client_reprojection` controls
+Quest/PICO missing-frame smoothing with `off`, `pose`, and `pose_warp`. Audio is reported active
+after current-app capture begins; microphone, WiFi audio, and non-Apple capture are not implemented.
 
 Transport readiness work is asynchronous. Qt Home shows checking/configuring status while the
 worker is running, ignores stale results after ADB mode, ADB path, selected serial, or transport

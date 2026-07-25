@@ -36,6 +36,19 @@ At a high level:
 
 `Session::EndFrame()` must remain non-blocking. The streaming path uses `StreamingFrameQueue`, a latest-frame-only queue that replaces any not-yet-encoded frame and immediately releases the replaced `FrameSource` resources. `FrameSource` owns backend-native image references and per-image sync tokens so async encoders can safely outlive the OpenXR frame submission.
 
+## Speaker Audio Flow
+
+On macOS, optional headset audio uses ScreenCaptureKit to capture only the current OpenXR
+application at 48 kHz stereo. Capture callbacks copy float PCM into an eight-packet bounded queue;
+the independent audio sender writes framed records to USB TCP `9947`, so socket backpressure never
+runs on the capture callback, video encoder callback, or `Session::EndFrame()`.
+
+The Quest client opens AAudio only after the server advertises audio and advertises output support
+only after that device and the USB socket are ready. A single-producer/single-consumer ring buffer
+holds at most 100 ms, starts after a 30 ms prefill, emits silence while prefilling, and returns to
+prefill after an underrun. Disconnect resets the socket, player, and buffer before transport retry.
+Microphone and WiFi audio are separate future paths.
+
 ## Runtime Boundaries
 
 The runtime keeps these internal boundaries explicit:

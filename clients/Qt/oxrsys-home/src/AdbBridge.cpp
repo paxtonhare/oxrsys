@@ -249,7 +249,7 @@ bool AdbStatus::isAvailable() const
 
 QList<int> AdbBridge::reversePorts()
 {
-    return {9944, 9945, 9946, 9948};
+    return {9944, 9945, 9946, 9947, 9948};
 }
 
 QStringList AdbBridge::candidatePaths(const QString& customPath)

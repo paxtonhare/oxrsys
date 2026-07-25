@@ -17,6 +17,7 @@
 #include "RuntimeSockets.h"
 #include "GraphicsTypes.h"
 #include "StreamingAbr.h"
+#include "StreamingAudioQueue.h"
 #include "StreamingFrameQueue.h"
 #include "StreamingReconfigure.h"
 
@@ -25,6 +26,7 @@
 
 class VideoEncoder;
 class TrackingReceiver;
+class AudioCapture;
 
 /**
  * Streaming server that broadcasts its presence and streams VR content
@@ -160,9 +162,11 @@ private:
     void ControlThread();
     void EncodeThread();
     void VideoSendThread();
+    void AudioSendThread();
     void TcpControlThread();
     void TcpVideoThread();
     void TcpTrackingThread();
+    void TcpAudioThread();
     void TcpSpatialThread();
     std::string GetLocalIpAddress() const;
     oxr::protocol::ServerAnnounce BuildServerAnnounce(bool reliableControlTransport) const;
@@ -197,6 +201,8 @@ private:
     void SendEncodedVideoFrame(const EncodedVideoFrame& frame);
     void SendRenderPosePacket(const EncodedVideoFrame& frame);
     bool StartUsbTcpListeners();
+    bool StartHeadsetAudio(const oxr::protocol::ClientConnect& clientConnect);
+    void StopHeadsetAudio();
     void SendUsbDisconnectBestEffort();
     void StopUsbTcpSockets();
 
@@ -214,6 +220,9 @@ private:
     std::atomic_bool clientSupportsStreamReconfigure_{false};
     std::atomic_bool clientSupportsMixedRealityPassthrough_{false};
     std::atomic_bool clientSupportsSpatialEntity_{false};
+    std::atomic_bool clientSupportsAudioOutput_{false};
+    std::atomic_bool audioTransportAvailable_{false};
+    std::atomic_bool headsetAudioNegotiated_{false};
     std::atomic<oxr::protocol::VideoCodec> activeVideoCodec_{oxr::protocol::VideoCodec::H265};
     std::atomic<uint32_t> targetRefreshRateHz_{90};
     std::atomic<float> clientPipelineLatencyMs_{18.0f};
@@ -252,10 +261,12 @@ private:
     SocketHandle tcpControlListenSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpVideoListenSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpTrackingListenSocket_ = oxrsys::runtime_socket::InvalidSocket;
+    SocketHandle tcpAudioListenSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpSpatialListenSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpControlClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpVideoClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpTrackingClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
+    SocketHandle tcpAudioClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpSpatialClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     std::mutex tcpSocketMutex_;
     std::mutex disconnectMutex_;
@@ -278,12 +289,15 @@ private:
     std::thread controlThread_;
     std::thread encodeThread_;
     std::thread videoSendThread_;
+    std::thread audioSendThread_;
     std::thread tcpControlThread_;
     std::thread tcpVideoThread_;
     std::thread tcpTrackingThread_;
+    std::thread tcpAudioThread_;
     std::thread tcpSpatialThread_;
     std::atomic<bool> running_{false};
     StreamingFrameQueue frameQueue_;
+    StreamingAudioQueue audioQueue_;
     std::shared_ptr<PacketDispatchState> packetDispatchState_;
     std::atomic<uint32_t> pendingFrameDepthMax_{0};
     std::atomic<uint32_t> replacedFrameCount_{0};
@@ -295,6 +309,9 @@ private:
     std::atomic<uint32_t> videoSendDroppedFramesTotalForAbr_{0};
     std::atomic<uint32_t> videoTcpSendFailures_{0};
     std::atomic<uint32_t> videoUdpRetransmittedPackets_{0};
+    std::atomic<uint32_t> audioFrameIndex_{0};
+    std::atomic<uint64_t> audioFramesCaptured_{0};
+    std::atomic<uint32_t> audioQueueDrops_{0};
     std::mutex videoSendMutex_;
     std::condition_variable videoSendCv_;
     std::deque<EncodedVideoFrame> videoSendQueue_;
@@ -315,6 +332,7 @@ private:
 
     // Sub-components
     std::shared_ptr<VideoEncoder> encoder_;
+    std::unique_ptr<AudioCapture> audioCapture_;
     std::unique_ptr<TrackingReceiver> trackingReceiver_;
     GraphicsContext graphicsContext_ = {};
 

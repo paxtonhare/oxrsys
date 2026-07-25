@@ -6,6 +6,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Added
 
+- Added speaker-only audio for macOS-to-Quest USB streaming: ScreenCaptureKit captures the current OpenXR application at 48 kHz stereo, a bounded TCP `9947` queue carries float PCM, and the Quest client uses low-latency AAudio playback with prefill, underrun recovery, reconnect cleanup, capability negotiation, and Home-managed ADB reverse setup. Microphone and WiFi audio remain out of scope.
 - Added complete Quest controller transport for thumbstick clicks and independent aim poses, plus runtime interaction-profile change events and stable controller-first profile selection during transient tracking gaps.
 - Added a visionOS "Emulate controllers" toggle so controller-only PCVR games are playable without physical spatial controllers: hand-tracking gestures synthesize VR controllers (index pinch → trigger, middle/ring pinch → face buttons, three-finger curl → grip, wrist → 6DOF pose), and when an Xbox-style gamepad is connected the hand pose plus gamepad buttons/sticks/triggers emulate Meta Touch controllers (compatibility mode takes priority). Emulated controllers are corrected to the Meta/Touch orientation and flow through the existing tracking path.
 - Added headset contrast-adaptive sharpening: a `client_sharpening` (0.0-1.0) server setting is carried to the client in the announce, and the visionOS client applies a near-free luma-only contrast-adaptive sharpen in source (video) space — four extra luma taps in the same pass, no second render pass and no added latency — with matching SwiftUI Home and Qt Home sliders.
@@ -83,8 +84,8 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 - Added macOS package and distribution helpers: `scripts/macos_build_package.sh` and `scripts/macos_sign_notarize.sh`.
 - Added the `net.demonixis.oxrsys-unity` Unity Package Manager package with editor runtime selection and a macOS Player OpenXR loader postprocessor.
 - Added runtime tests for portable platform behavior, streaming frame queue replacement, Vulkan dispatch, expanded input handling, protocol layout, runtime status, and loader-backed API behavior.
-- Added server-selected headset refresh controls, foveated encoding presets, headset client foveation override presets, Quest shader upscaling controls, and reserved headset-audio configuration to SwiftUI Home and Qt Home.
-- Added protocol v1.1 trailing fields for server feature flags, client capability flags, foveated encoding parameters, client foveation, client upscaling, and reserved headset speaker audio.
+- Added server-selected headset refresh controls, foveated encoding presets, headset client foveation override presets, Quest shader upscaling controls, and headset-audio configuration to SwiftUI Home and Qt Home.
+- Added protocol v1.1 trailing fields for server feature flags, client capability flags, foveated encoding parameters, client foveation, client upscaling, and headset speaker audio.
 - Added ALVR-style AADT foveated encoding math, a Metal encoder preprocessing shader, and Quest shader-side foveated-encoding decompression.
 - Added a Quest edge-aware shader upscaling path without requiring the proprietary Snapdragon SDK.
 - Added configurable Quest client reprojection modes (`off`, `pose`, `pose_warp`) for short decode/network gaps, with displayed-frame-age and reprojection counters in latency reports and runtime status.
@@ -147,7 +148,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 - Linux video streaming still needs real Vulkan image readback before it can be treated as feature-complete.
 - Windows remains layout and portability scaffolding only for this release.
 - PICO and headset-specific controller/hand tracking behavior still needs regular hardware validation.
-- Headset speaker audio has protocol/config scaffolding but no active runtime capture/playback pipeline yet.
+- Headset speaker audio is currently limited to the macOS current-application USB ADB path; WiFi audio, microphone input, and non-Apple runtime capture remain follow-up work.
 
 ## 1.1.0 - 2026-05-26
 

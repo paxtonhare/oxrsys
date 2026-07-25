@@ -115,8 +115,8 @@ struct OXRSysServerConfig: Equatable {
     # Occlusion mode: "off", "scene_mesh", or "environment_depth".
     occlusion_mode = "off"
 
-    # Reserved for headset speaker audio. The runtime does not advertise audio until
-    # a platform capture/playback path is attached.
+    # Stream the current macOS OpenXR application's 48 kHz stereo audio to a
+    # compatible Quest client over USB ADB. Microphone and WiFi audio are excluded.
     headset_audio = false
 
     [spatial]

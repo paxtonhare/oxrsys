@@ -1857,7 +1857,7 @@ nonisolated private extension Data {
 }
 
 enum QuestUsbBridge {
-    nonisolated static var reversePorts: [Int] { [9944, 9945, 9946, 9948] }
+    nonisolated static var reversePorts: [Int] { [9944, 9945, 9946, 9947, 9948] }
 
     nonisolated static func devices(customAdbPath: String? = nil) throws -> [QuestUsbDevice] {
         if cleanedCustomAdbPath(customAdbPath) == nil {

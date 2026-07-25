@@ -253,10 +253,11 @@ commands are:
 adb -s <serial> reverse tcp:9944 tcp:9944
 adb -s <serial> reverse tcp:9945 tcp:9945
 adb -s <serial> reverse tcp:9946 tcp:9946
+adb -s <serial> reverse tcp:9947 tcp:9947
 adb -s <serial> reverse tcp:9948 tcp:9948
 ```
 
-With `streaming.transport = "auto"`, the Quest app connects to `127.0.0.1:9946` first. If the ADB reverse control channel answers, the client receives `ServerAnnounce`, opens TCP video, tracking, and optional spatial channels, and sends `ClientConnect`. Port `9948` is optional while spatial remains reserved; missing it must not prevent USB video/tracking streaming. If USB is unavailable, it falls back to WiFi UDP discovery while continuing to retry USB periodically so launch order is not critical. When the runtime closes the USB control/video sockets or video stalls after an app exits, the Quest client resets connection state and returns to the same retry loop without requiring the Android app to be relaunched. With `streaming.transport = "usb_adb"`, the runtime disables WiFi discovery fallback.
+With `streaming.transport = "auto"`, the Quest app connects to `127.0.0.1:9946` first. If the ADB reverse control channel answers, the client receives `ServerAnnounce`, opens TCP video, tracking, negotiated audio, and optional spatial channels, and sends `ClientConnect`. Audio port `9947` is required only when `headset_audio = true`; port `9948` is optional while spatial remains reserved. Missing either optional channel must not prevent USB video/tracking streaming. If USB is unavailable, it falls back to WiFi UDP discovery while continuing to retry USB periodically so launch order is not critical. When the runtime closes the USB control/video/audio sockets or video stalls after an app exits, the Quest client resets connection state and returns to the same retry loop without requiring the Android app to be relaunched. With `streaming.transport = "usb_adb"`, the runtime disables WiFi discovery fallback.
 
 The Quest client sends `ClientConnect.maxBitrateMbps = 0` on USB ADB, so USB quality is controlled by the server/Home bitrate setting rather than an extra headset-side cap. WiFi keeps its client-side ceiling, currently `100` Mbps for Quest-class clients; runtime status reports both `configured_bitrate_mbps` and the effective `max_bitrate_mbps` so Home can show when WiFi caps a higher server setting. It advertises H.264 and H.265 support in `ClientConnect.supportedCodecs` while keeping H.265 in `ClientConnect.preferredCodec`; `supportedCodecs = 0` remains the legacy H.265-only behavior for older clients.
 
@@ -268,14 +269,14 @@ USB TCP sends full encoded NAL records and render-pose records, so UDP FEC and N
 
 - Real `XR_EXT_hand_tracking` joints are fed from the Android client into the runtime.
 - Quest and PICO controller profiles are suggested on the Android client, and the runtime gates controller poses and controller actions with explicit active flags while keeping hand tracking available through separate hand-interaction bindings.
-- USB ADB reverse TCP streaming is available alongside WiFi UDP streaming, including the reserved reliable spatial channel on `9948`.
+- USB ADB reverse TCP streaming is available alongside WiFi UDP streaming, including speaker audio on `9947` and the reserved reliable spatial channel on `9948`.
 - Runtime encoded-video dispatch is bounded and latest-frame-oriented, with queue/drop counters exposed in runtime status.
 - Refresh rate is selected by the server/Home, requested by the client, and negotiated back from the active headset rate.
 - Latency reporting, displayed-frame-age reporting, reprojection counters, and keyframe requests are wired into the control path.
 - Runtime ABR full mode can reconfigure the encoded stream resolution over USB TCP through `StreamConfigUpdate/Ack` without resizing the OpenXR application's swapchains.
 - The client applies frame-exact render poses for projection submission so headset compositor reprojection has the pose used to render the displayed frame, and can reuse short missing-frame gaps with bounded client reprojection.
 - Dynamic client foveation, shader upscaling, foveated-encoding decompression, app-requested passthrough during streaming, and encoded-resolution reconfiguration are present as evolving paths and should be validated regularly on hardware.
-- Headset speaker audio has protocol fields reserved, but the Quest client does not yet play a runtime audio stream.
+- With `headset_audio = true`, the macOS runtime captures only the current OpenXR application's audio through ScreenCaptureKit and the Quest client plays it through a 30 ms-prefilled, 100 ms-bounded AAudio buffer. macOS may request Screen & System Audio Recording permission for the host application on first use. Silence or disconnect resets playback without blocking the XR frame loop. WiFi audio and microphone input are not implemented.
 
 ## Known Limits
 

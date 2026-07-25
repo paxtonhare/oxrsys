@@ -7,6 +7,7 @@ set(OXRSYS_RUNTIME_SOURCES
     src/RuntimeStatus.cpp
     src/RuntimePlatform.cpp
     src/RuntimeSockets.cpp
+    src/StreamingAudioQueue.cpp
     src/StreamingFrameQueue.cpp
     src/Instance.cpp
     src/Session.cpp
@@ -31,6 +32,7 @@ set(OXRSYS_RUNTIME_ENABLE_OPENGL OFF)
 
 if(APPLE)
     list(APPEND OXRSYS_RUNTIME_SOURCES
+        src/AudioCaptureMac.mm
         src/SwapchainCommon.cpp
         src/SwapchainVulkan.cpp
         src/SwapchainMetal.mm
@@ -46,6 +48,9 @@ if(APPLE)
         )
     endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND OXRSYS_RUNTIME_SOURCES
+        src/AudioCapture.cpp
+    )
     if(OXRSYS_VIDEO_ENCODER_NORMALIZED STREQUAL "VIDEOTOOLBOX")
         message(FATAL_ERROR "OXRSYS_VIDEO_ENCODER=VIDEOTOOLBOX is only supported on Apple platforms")
     endif()
@@ -58,6 +63,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(OXRSYS_RUNTIME_NEEDS_FFMPEG ON)
     set(OXRSYS_RUNTIME_ENABLE_OPENGL ON)
 elseif(WIN32)
+    list(APPEND OXRSYS_RUNTIME_SOURCES
+        src/AudioCapture.cpp
+    )
     if(OXRSYS_VIDEO_ENCODER_NORMALIZED STREQUAL "VIDEOTOOLBOX")
         message(FATAL_ERROR "OXRSYS_VIDEO_ENCODER=VIDEOTOOLBOX is only supported on Apple platforms")
     endif()
@@ -261,6 +269,8 @@ if(APPLE)
         "-framework VideoToolbox"
         "-framework CoreMedia"
         "-framework CoreVideo"
+        "-framework ScreenCaptureKit"
+        "-framework AudioToolbox"
     )
 endif()
 

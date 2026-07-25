@@ -317,12 +317,14 @@ ABC unauthorized usb:1-1
 UsbFfs tcp:9944 tcp:9944
 UsbFfs tcp:9945 tcp:9945
 UsbFfs tcp:9946 tcp:9946
+UsbFfs tcp:9947 tcp:9947
 UsbFfs tcp:9948 tcp:9948
 )");
     QSet<int> expectedPorts;
     expectedPorts.insert(9944);
     expectedPorts.insert(9945);
     expectedPorts.insert(9946);
+    expectedPorts.insert(9947);
     expectedPorts.insert(9948);
     expect(ports == expectedPorts, "Expected reverse ports");
 }

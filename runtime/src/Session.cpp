@@ -283,6 +283,8 @@ XrResult Session::BeginSession(const XrSessionBeginInfo* beginInfo)
         frameBegun_ = false;
         waitedFrameCount_ = 0;
     }
+    lastFrameTime_ = std::chrono::steady_clock::now();
+    framePacer_.Reset();
     lastLeftInteractionProfile_ = XR_NULL_PATH;
     lastRightInteractionProfile_ = XR_NULL_PATH;
 
@@ -457,14 +459,13 @@ XrResult Session::WaitFrame(const XrFrameWaitInfo* frameWaitInfo, XrFrameState* 
         targetRefreshHz = std::max(streamingServer_->GetTargetRefreshRateHz(), 1u);
     }
 
-    // Throttle to the negotiated headset refresh rate when available.
+    // Keep an absolute cadence so timer overshoot does not accumulate.
     auto now = std::chrono::steady_clock::now();
-    auto elapsed = now - lastFrameTime_;
     auto targetFrameTime = std::chrono::nanoseconds(1000000000ll / targetRefreshHz);
-
-    if (elapsed < targetFrameTime)
+    const auto deadline = framePacer_.NextDeadline(now, targetFrameTime);
+    if (deadline > now)
     {
-        std::this_thread::sleep_for(targetFrameTime - elapsed);
+        std::this_thread::sleep_until(deadline);
         now = std::chrono::steady_clock::now();
     }
 

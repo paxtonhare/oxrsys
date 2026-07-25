@@ -150,6 +150,7 @@ set(OXRSYS_LOGCAT_TEST_ENV
 add_executable(oxrsys_runtime_tests
     tests/TestClientLiveness.cpp
     tests/TestConfig.cpp
+    tests/TestFramePacer.cpp
     tests/TestInputManager.cpp
     tests/TestRuntimePlatform.cpp
     tests/TestStreamingAbr.cpp

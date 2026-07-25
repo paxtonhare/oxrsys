@@ -3,6 +3,7 @@
 #pragma once
 
 #include <openxr/openxr.h>
+#include "FramePacer.h"
 #include "GraphicsTypes.h"
 #include <memory>
 #include <vector>
@@ -151,6 +152,7 @@ private:
     int64_t monoStartNs_ = 0;
 #endif
     std::chrono::steady_clock::time_point lastFrameTime_;
+    FramePacer framePacer_;
     XrPath lastLeftInteractionProfile_ = XR_NULL_PATH;
     XrPath lastRightInteractionProfile_ = XR_NULL_PATH;
 

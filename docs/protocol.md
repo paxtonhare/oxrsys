@@ -172,6 +172,7 @@ the passthrough objects. Runtime status reports `passthrough_ready` only when bo
 - headset pose
 - headset linear and angular velocity when the client can provide it
 - left and right controller poses
+- independently valid left and right controller aim poses
 - buttons, triggers, grips, and thumbsticks
 - IPD and eye FOV overrides
 - optional 26-joint hand tracking payloads for each hand
@@ -180,6 +181,9 @@ Hand presence is indicated by `TRACKING_FLAG_LEFT_HAND_ACTIVE` and `TRACKING_FLA
 Controller pose presence is indicated independently by `TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE` and
 `TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE`. If a controller flag is absent, the runtime treats that
 controller as inactive and preserves the last valid pose instead of applying zeroed packet fields.
+The original 1008-byte tracking payload remains the compatibility base. Clients may append the
+56-byte controller-aim extension and set its per-hand validity flags independently from grip-pose
+validity. Button bits include both left and right thumbstick clicks.
 
 Velocity values are optional. Zero vectors mean the runtime should fall back to its bounded finite-difference prediction path.
 

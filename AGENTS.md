@@ -12,7 +12,7 @@ first-pass Linux OpenGL GLX backend, Windows Vulkan + Direct3D 11/12 runtime bac
 typed internal graphics/frame plumbing, release-time Metal streaming snapshots,
 runtime-selectable H.264/H.265 video codecs and negotiated H.265 Main10 streaming,
 portable platform/socket helpers,
-controller and hand input paths, loader-backed
+controller and hand input paths including thumbstick clicks and independent aim poses, loader-backed
 runtime tests, `XR_EXT_conformance_automation`, `XR_EXT_hand_interaction`, and `XR_EXT_debug_utils`
 are in place. Windows OpenGL/WGL is still follow-up work. The Android VR client now feeds
 real `XR_EXT_hand_tracking` joints into the runtime, gates controller poses with explicit active flags,
@@ -110,6 +110,7 @@ Avoid duplicating the same guidance in multiple files. If commands, platform sta
 - Video codec negotiation must stay conservative: `ClientConnect.supportedCodecs = 0` means a legacy H.265-only client, H.265 remains the default, and H.264 must only be selected for clients that explicitly advertise H.264 support.
 - 10-bit streaming is HEVC Main10 only: enable it only for H.265 when `encoder_10bit` is configured and the client advertises `CLIENT_CAPABILITY_TEN_BIT_ENCODING`; H.264 and legacy clients must remain 8-bit.
 - Apple VideoToolbox streams use a BT.709 SDR, limited-range YCbCr color contract. Keep encoder metadata and client conversion aligned, including exact normalized code ranges for 8-bit and 10-bit bi-planar decoder surfaces.
+- Negotiated Main10 VideoToolbox input uses GPU-converted P010 surfaces; H.264 and 8-bit H.265 remain on the BGRA input path. Teardown must stay serialized with pending Metal completion handlers.
 - `ServerAnnounce.clientSharpeningPercent` (0-100, a repurposed reserved slot) carries the headset sharpen strength from the server's `client_sharpening` config; the visionOS client applies it as a display-space contrast-adaptive sharpen pass. Keep the C++/Swift announce layout in sync (ProtocolLayoutTests).
 - The visionOS client advertises `CLIENT_CAPABILITY_FOVEATED_ENCODING` and inverse-warps the AADT layout in the fragment shader from the announce's foveation parameters (center size/shift, edge ratio, and the derived eye-size ratio). The client un-warp must stay the exact inverse of the server's `compress_axis` warp (runtime/src/VideoEncoder.mm) or the image distorts; visionOS uses a closed-form inverse verified to fp32 round-trip precision against that warp — re-verify numerically if either side's math changes.
 - The Apple VideoToolbox decode path is latency-first: prefer the hardware decoder (`Enable`, not `Require`, so session creation can never hard-fail), set `kVTDecompressionPropertyKey_RealTime`, and never combine it with `MaximizePowerEfficiency`; NAL splitting must scan the frame in place rather than copying the whole buffer into an array.
@@ -129,6 +130,7 @@ Avoid duplicating the same guidance in multiple files. If commands, platform sta
 - Quest passthrough shell mode depends on `XR_FB_passthrough` support and the optional Android feature `com.oculus.feature.PASSTHROUGH`; streaming video remains the priority display path. The Android client must advertise `CLIENT_CAPABILITY_MIXED_REALITY_PASSTHROUGH` only after the headset runtime reports support and passthrough objects are created, and runtime status must distinguish `passthrough_enabled`, `passthrough_supported`, and `passthrough_ready`. Streaming disables the local passthrough underlay and releases local shell GL resources unless effective passthrough is active; Quest clients must not use black-key alpha by default for ordinary dark pixels, and any transparent-clear compatibility fallback must be explicit.
 - OpenXR environment blend mode support is snapshotted at instance creation; `passthrough_enabled` only enables the headset underlay, while `app_alpha_blend_passthrough` is the explicit opt-in for advertising `XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND` to apps. Changing the alpha opt-in requires restarting the OpenXR app/runtime session to change advertised blend modes.
 - Streaming controller poses are valid only when `TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE` or `TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE` is present; missing controller flags must not overwrite the last valid runtime pose.
+- Streamed controller aim-pose flags are independent from grip-pose flags, and interaction-profile changes must be emitted only when the effective per-hand profile pair changes.
 - The action system is profile-aware and must not regress to hard-forcing `KHR simple_controller`.
 - `xrLocateSpacesKHR` is accepted as an alias of the OpenXR 1.1 `xrLocateSpaces` entry point.
 - Reference spaces currently enumerate `VIEW`, `LOCAL`, `LOCAL_FLOOR`, and `STAGE`.

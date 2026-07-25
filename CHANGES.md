@@ -6,6 +6,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Added
 
+- Added complete Quest controller transport for thumbstick clicks and independent aim poses, plus runtime interaction-profile change events and stable controller-first profile selection during transient tracking gaps.
 - Added a visionOS "Emulate controllers" toggle so controller-only PCVR games are playable without physical spatial controllers: hand-tracking gestures synthesize VR controllers (index pinch → trigger, middle/ring pinch → face buttons, three-finger curl → grip, wrist → 6DOF pose), and when an Xbox-style gamepad is connected the hand pose plus gamepad buttons/sticks/triggers emulate Meta Touch controllers (compatibility mode takes priority). Emulated controllers are corrected to the Meta/Touch orientation and flow through the existing tracking path.
 - Added headset contrast-adaptive sharpening: a `client_sharpening` (0.0-1.0) server setting is carried to the client in the announce, and the visionOS client applies a near-free luma-only contrast-adaptive sharpen in source (video) space — four extra luma taps in the same pass, no second render pass and no added latency — with matching SwiftUI Home and Qt Home sliders.
 - Added foveated-stream decode to the visionOS client: it now advertises `CLIENT_CAPABILITY_FOVEATED_ENCODING` and inverse-warps the server's AADT layout in the fragment shader using a closed-form inverse of the server warp (exact to fp32, replacing per-pixel bisection), so `foveated_encoding_preset` takes effect on Vision Pro (previously the client did not advertise support, so the server sent non-foveated video).
@@ -28,6 +29,8 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Changed
 
+- VideoToolbox now feeds negotiated HEVC Main10 encodes from GPU-converted P010 surfaces while preserving the existing BGRA path for H.264 and 8-bit H.265.
+- Runtime frame pacing now follows absolute negotiated-refresh deadlines so timer overshoot does not accumulate across frames.
 - The visionOS client now measures real decode-to-photon latency (renderer pickup wait + in-flight queue + compositor present) per displayed frame and reports it in place of the previous one-refresh compositor guess, so the runtime's pose-prediction horizon covers the actual client display path; the displayed-frame-age field is now populated too.
 - The visionOS client now reports measured head linear/angular velocity (differenced from consecutive ARKit samples with light smoothing) in the tracking packet, activating the runtime's preferred client-velocity path for bounded pose prediction instead of its noisier finite differencing of received UDP poses — frames arrive rendered closer to the actual head position.
 - Extended visionOS reprojection from rotation-only to a full 6-DOF planar timewarp: the echoed render-pose position (previously discarded) is now kept, and the fragment shader compensates head translation against the shared 2 m reprojection plane for the entire render-to-display latency — up/down/sway no longer lags the full round-trip. Includes the per-eye rotation-induced offset (IPD lever arm) and a clamped delta so a bad pose match cannot distort the warp.
@@ -46,6 +49,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Fixed
 
+- Serialized VideoToolbox shutdown with pending Metal completion work and removed the encoder callback's strong self-lifetime dependency.
 - Contained decode-error corruption on the Apple streaming clients: after a decode failure the decoder drops inter frames and re-requests a keyframe until an IRAP (H.265) or IDR (H.264) arrives, so packet loss shows a brief clean freeze instead of propagating green/blocky corruption.
 - Fixed a potential visionOS black screen when the server streams 8-bit H.265 while the client requests a 10-bit decode surface, by falling back to an 8-bit output surface when 10-bit session creation is rejected; the renderer already selects its color conversion from the buffer's actual pixel format.
 - Fixed SwiftUI Home USB ADB readiness oscillation by moving USB refresh/setup off the view update path, ignoring stale ADB results after source or device changes, preserving verified reverse ports across transient mapping-read failures, and running persisted USB startup reverse setup only once.

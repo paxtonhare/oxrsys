@@ -113,6 +113,8 @@ private:
     };
 
     void TransitionState(XrSessionState newState);
+    void RefreshInteractionProfiles();
+    void NotifyInteractionProfileChanged(XrPath leftProfile, XrPath rightProfile);
     void AdvanceSessionStateAfterFrameSubmission();
     bool IsFrameLoopRunningState() const;
     bool OwnsSwapchain(const Swapchain* swapchain) const;
@@ -149,6 +151,8 @@ private:
     int64_t monoStartNs_ = 0;
 #endif
     std::chrono::steady_clock::time_point lastFrameTime_;
+    XrPath lastLeftInteractionProfile_ = XR_NULL_PATH;
+    XrPath lastRightInteractionProfile_ = XR_NULL_PATH;
 
     std::vector<DebugUtilsLabelState> debugUtilsLabelRegions_;
     std::optional<DebugUtilsLabelState> debugUtilsInsertedLabel_;

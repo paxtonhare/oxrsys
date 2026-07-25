@@ -1812,6 +1812,23 @@ TEST_CASE("Quest Touch profile reports float and vector inputs", "[runtime][acti
     XrActionsSyncInfo syncInfo = {XR_TYPE_ACTIONS_SYNC_INFO};
     syncInfo.countActiveActionSets = 1;
     syncInfo.activeActionSets = &activeActionSet;
+
+    XrFrameState frameState = {XR_TYPE_FRAME_STATE};
+    XR_CHECK(xrWaitFrame(context.session, nullptr, &frameState));
+    bool sawInteractionProfileChanged = false;
+    XrEventDataBuffer event = {XR_TYPE_EVENT_DATA_BUFFER};
+    while (xrPollEvent(context.instance, &event) == XR_SUCCESS)
+    {
+        if (event.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED)
+        {
+            const auto* profileChanged =
+                reinterpret_cast<const XrEventDataInteractionProfileChanged*>(&event);
+            CHECK(profileChanged->session == context.session);
+            sawInteractionProfileChanged = true;
+        }
+        event = {XR_TYPE_EVENT_DATA_BUFFER};
+    }
+    CHECK(sawInteractionProfileChanged);
     XR_CHECK(xrSyncActions(context.session, &syncInfo));
 
     XrInteractionProfileState interactionProfileState = {XR_TYPE_INTERACTION_PROFILE_STATE};
@@ -2072,12 +2089,24 @@ TEST_CASE("Touch Plus promoted profile is selectable for OpenXR 1.1 apps",
                  XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
     XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &triggerAction));
 
-    XrActionSuggestedBinding binding = {triggerAction, triggerValuePath};
+    XrAction triggerSelectAction = XR_NULL_HANDLE;
+    actionCreateInfo.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    std::strncpy(actionCreateInfo.actionName, "touch_plus_11_select",
+                 XR_MAX_ACTION_NAME_SIZE);
+    std::strncpy(actionCreateInfo.localizedActionName, "Touch Plus 11 Select",
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet, &actionCreateInfo, &triggerSelectAction));
+
+    XrActionSuggestedBinding bindings[] = {
+        {triggerAction, triggerValuePath},
+        {triggerSelectAction, triggerValuePath},
+    };
     XrInteractionProfileSuggestedBinding suggestedBindings = {
         XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
     suggestedBindings.interactionProfile = promotedTouchPlusPath;
-    suggestedBindings.suggestedBindings = &binding;
-    suggestedBindings.countSuggestedBindings = 1;
+    suggestedBindings.suggestedBindings = bindings;
+    suggestedBindings.countSuggestedBindings =
+        static_cast<uint32_t>(std::size(bindings));
     XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggestedBindings));
 
     XrSessionActionSetsAttachInfo attachInfo = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
@@ -2110,6 +2139,13 @@ TEST_CASE("Touch Plus promoted profile is selectable for OpenXR 1.1 apps",
     CHECK(state.isActive == XR_TRUE);
     CHECK_THAT(state.currentState, WithinAbs(0.58f, 0.001f));
 
+    getInfo.action = triggerSelectAction;
+    XrActionStateBoolean selectState = {XR_TYPE_ACTION_STATE_BOOLEAN};
+    XR_CHECK(xrGetActionStateBoolean(context.session, &getInfo, &selectState));
+    CHECK(selectState.isActive == XR_TRUE);
+    CHECK(selectState.currentState == XR_TRUE);
+
+    XR_CHECK(xrDestroyAction(triggerSelectAction));
     XR_CHECK(xrDestroyAction(triggerAction));
     XR_CHECK(xrDestroyActionSet(actionSet));
 }

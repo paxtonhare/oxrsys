@@ -2473,9 +2473,21 @@ static void AccumulateBindingState(const InputManager& inputManager, const Sugge
     bool deviceActive = inputManager.IsInputDeviceActive(hand);
     if (inputManager.IsStreaming())
     {
-        deviceActive = binding.profilePathString == "/interaction_profiles/ext/hand_interaction_ext"
-                           ? inputManager.IsHandTrackingActive(hand)
-                           : inputManager.IsControllerTrackingActive(hand);
+        if (binding.profilePathString == "/interaction_profiles/ext/hand_interaction_ext")
+        {
+            deviceActive = inputManager.IsHandTrackingActive(hand);
+        }
+        else if (binding.componentPath == "aim/pose")
+        {
+            // Older packets use grip as the aim fallback; newer packets may
+            // carry a valid aim pose while grip tracking is temporarily invalid.
+            deviceActive = inputManager.IsControllerTrackingActive(hand) ||
+                           inputManager.IsControllerAimTrackingActive(hand);
+        }
+        else
+        {
+            deviceActive = inputManager.IsControllerTrackingActive(hand);
+        }
     }
     if (!deviceActive)
     {
@@ -2548,7 +2560,26 @@ static void AccumulateBindingState(const InputManager& inputManager, const Sugge
 static std::string SelectCurrentInteractionProfileForInstance(
     const Instance* instance, const InputManager& inputManager, InputManager::Hand hand)
 {
-    for (const std::string& profilePath : inputManager.GetCurrentInteractionProfileCandidates(hand))
+    const std::vector<std::string> candidates =
+        inputManager.GetCurrentInteractionProfileCandidates(hand);
+
+    for (const std::string& profilePath : candidates)
+    {
+        if (profilePath.empty() || !IsKnownInteractionProfilePath(instance, profilePath))
+        {
+            continue;
+        }
+
+        XrPath profile = XR_NULL_PATH;
+        Runtime::Get().StringToPath(profilePath.c_str(), &profile);
+        auto suggested = gSuggestedBindings.find(static_cast<uint64_t>(profile));
+        if (suggested != gSuggestedBindings.end() && !suggested->second.empty())
+        {
+            return profilePath;
+        }
+    }
+
+    for (const std::string& profilePath : candidates)
     {
         if (!profilePath.empty() && IsKnownInteractionProfilePath(instance, profilePath))
         {

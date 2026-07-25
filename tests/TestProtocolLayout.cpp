@@ -2,12 +2,34 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <oxrsys/protocol/ControllerButtons.h>
 #include <oxrsys/protocol/Foveation.h>
 #include <oxrsys/protocol/Protocol.h>
 
 #include <cstddef>
 
 using namespace oxr::protocol;
+
+TEST_CASE("Quest discrete controller inputs encode into the tracking button mask",
+          "[protocol][input]")
+{
+    ControllerButtonInputs inputs = {};
+    inputs.a = true;
+    inputs.y = true;
+    inputs.menu = true;
+    inputs.leftThumbstick = true;
+    inputs.rightThumbstick = true;
+
+    const uint32_t buttons = EncodeControllerButtonInputs(inputs);
+
+    CHECK((buttons & BUTTON_A) != 0);
+    CHECK((buttons & BUTTON_B) == 0);
+    CHECK((buttons & BUTTON_X) == 0);
+    CHECK((buttons & BUTTON_Y) != 0);
+    CHECK((buttons & BUTTON_MENU) != 0);
+    CHECK((buttons & BUTTON_LEFT_THUMBSTICK) != 0);
+    CHECK((buttons & BUTTON_RIGHT_THUMBSTICK) != 0);
+}
 
 TEST_CASE("C++ protocol layouts match the documented wire format", "[protocol]")
 {
@@ -47,13 +69,18 @@ TEST_CASE("C++ protocol layouts match the documented wire format", "[protocol]")
     STATIC_REQUIRE(SERVER_FEATURE_STREAM_RECONFIGURE == 0x00000010);
     STATIC_REQUIRE(CLIENT_CAPABILITY_STREAM_RECONFIGURE == 0x00000010);
 
-    STATIC_REQUIRE(sizeof(TrackingPacket) == 1008);
+    STATIC_REQUIRE(TRACKING_PACKET_BASE_SIZE == 1008);
+    STATIC_REQUIRE(sizeof(TrackingPacket) == 1064);
     STATIC_REQUIRE(offsetof(TrackingPacket, headLinearVelocity) == 152);
     STATIC_REQUIRE(offsetof(TrackingPacket, headAngularVelocity) == 164);
     STATIC_REQUIRE(offsetof(TrackingPacket, leftHandJoints) == 176);
     STATIC_REQUIRE(offsetof(TrackingPacket, rightHandJoints) == 592);
+    STATIC_REQUIRE(offsetof(TrackingPacket, leftControllerAimPos) ==
+                   TRACKING_PACKET_BASE_SIZE);
     STATIC_REQUIRE(TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE == 0x0004);
     STATIC_REQUIRE(TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE == 0x0008);
+    STATIC_REQUIRE(TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE == 0x0010);
+    STATIC_REQUIRE(TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE == 0x0020);
 }
 
 TEST_CASE("Foveated encoding presets calculate ALVR-style optimized eye sizes", "[protocol][foveation]")

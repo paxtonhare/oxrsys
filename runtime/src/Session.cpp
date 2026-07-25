@@ -221,6 +221,43 @@ void Session::TransitionState(XrSessionState newState)
     spdlog::info("OXRSys: Session state -> {}", static_cast<int>(newState));
 }
 
+void Session::NotifyInteractionProfileChanged(XrPath leftProfile, XrPath rightProfile)
+{
+    if (leftProfile == lastLeftInteractionProfile_ &&
+        rightProfile == lastRightInteractionProfile_)
+    {
+        return;
+    }
+
+    lastLeftInteractionProfile_ = leftProfile;
+    lastRightInteractionProfile_ = rightProfile;
+
+    XrEventDataBuffer event{};
+    auto* profileChanged =
+        reinterpret_cast<XrEventDataInteractionProfileChanged*>(&event);
+    profileChanged->type = XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED;
+    profileChanged->next = nullptr;
+    profileChanged->session = reinterpret_cast<XrSession>(handle_);
+    instance_->PushEvent(event);
+}
+
+void Session::RefreshInteractionProfiles()
+{
+    const auto currentProfilePath = [this](InputManager::Hand hand) {
+        const std::string profile = inputManager_->GetCurrentInteractionProfile(hand);
+        XrPath path = XR_NULL_PATH;
+        if (!profile.empty())
+        {
+            Runtime::Get().StringToPath(profile.c_str(), &path);
+        }
+        return path;
+    };
+
+    NotifyInteractionProfileChanged(
+        currentProfilePath(InputManager::Hand::Left),
+        currentProfilePath(InputManager::Hand::Right));
+}
+
 XrResult Session::BeginSession(const XrSessionBeginInfo* beginInfo)
 {
     if (beginInfo == nullptr)
@@ -246,6 +283,8 @@ XrResult Session::BeginSession(const XrSessionBeginInfo* beginInfo)
         frameBegun_ = false;
         waitedFrameCount_ = 0;
     }
+    lastLeftInteractionProfile_ = XR_NULL_PATH;
+    lastRightInteractionProfile_ = XR_NULL_PATH;
 
     running_ = true;
 
@@ -434,6 +473,7 @@ XrResult Session::WaitFrame(const XrFrameWaitInfo* frameWaitInfo, XrFrameState* 
 
     // Update input
     inputManager_->Update(dt);
+    RefreshInteractionProfiles();
 
     auto displayTime = std::chrono::duration_cast<std::chrono::nanoseconds>(now - startTime_).count();
 

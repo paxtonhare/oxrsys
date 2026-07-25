@@ -320,7 +320,16 @@ struct TrackingPacket
     // Optional hand tracking payload per joint: x, y, z, radius
     float leftHandJoints[HAND_JOINT_COUNT][4];
     float rightHandJoints[HAND_JOINT_COUNT][4];
+
+    // Optional controller aim poses. Older clients end after rightHandJoints;
+    // the corresponding tracking flags indicate whether each trailing pose is valid.
+    float leftControllerAimPos[3];
+    float leftControllerAimRot[4];
+    float rightControllerAimPos[3];
+    float rightControllerAimRot[4];
 };
+
+constexpr size_t TRACKING_PACKET_BASE_SIZE = offsetof(TrackingPacket, leftControllerAimPos);
 
 enum ButtonFlags : uint32_t
 {
@@ -343,6 +352,8 @@ enum TrackingFlags : uint32_t
     TRACKING_FLAG_RIGHT_HAND_ACTIVE = 0x0002,
     TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE = 0x0004,
     TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE = 0x0008,
+    TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE = 0x0010,
+    TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE = 0x0020,
 };
 
 // ─── Control Channel (bidirectional, UDP on CONTROL_PORT) ───────────────────

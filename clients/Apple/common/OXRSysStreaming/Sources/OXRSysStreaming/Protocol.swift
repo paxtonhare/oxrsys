@@ -346,6 +346,12 @@ public struct TrackingPacket: Sendable {
     public var leftHandJoints: HandJointData = HandJointData()
     public var rightHandJoints: HandJointData = HandJointData()
 
+    // Optional controller aim poses. Validity is indicated by trackingFlags.
+    public var leftControllerAimPos: (Float, Float, Float) = (0, 0, 0)
+    public var leftControllerAimRot: (Float, Float, Float, Float) = (0, 0, 0, 1)
+    public var rightControllerAimPos: (Float, Float, Float) = (0, 0, 0)
+    public var rightControllerAimRot: (Float, Float, Float, Float) = (0, 0, 0, 1)
+
     public init() {}
 }
 
@@ -395,6 +401,8 @@ public struct TrackingFlagsValues {
     public static let rightHandActive: UInt32 = 0x0002
     public static let leftControllerActive: UInt32 = 0x0004
     public static let rightControllerActive: UInt32 = 0x0008
+    public static let leftControllerAimActive: UInt32 = 0x0010
+    public static let rightControllerAimActive: UInt32 = 0x0020
 }
 
 public struct ButtonFlags {

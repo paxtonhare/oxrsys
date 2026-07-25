@@ -48,12 +48,15 @@ final class ProtocolLayoutTests: XCTestCase {
     }
 
     func testTrackingLayoutMatchesCppWireFormat() {
-        XCTAssertEqual(MemoryLayout<TrackingPacket>.size, 1008)
+        XCTAssertEqual(MemoryLayout<TrackingPacket>.size, 1064)
         XCTAssertEqual(MemoryLayout<TrackingPacket>.offset(of: \.headLinearVelocity), 152)
         XCTAssertEqual(MemoryLayout<TrackingPacket>.offset(of: \.headAngularVelocity), 164)
         XCTAssertEqual(MemoryLayout<TrackingPacket>.offset(of: \.leftHandJoints), 176)
         XCTAssertEqual(MemoryLayout<TrackingPacket>.offset(of: \.rightHandJoints), 592)
+        XCTAssertEqual(MemoryLayout<TrackingPacket>.offset(of: \.leftControllerAimPos), 1008)
         XCTAssertEqual(TrackingFlagsValues.leftControllerActive, 0x0004)
         XCTAssertEqual(TrackingFlagsValues.rightControllerActive, 0x0008)
+        XCTAssertEqual(TrackingFlagsValues.leftControllerAimActive, 0x0010)
+        XCTAssertEqual(TrackingFlagsValues.rightControllerAimActive, 0x0020)
     }
 }

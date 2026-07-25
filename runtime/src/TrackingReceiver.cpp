@@ -213,26 +213,26 @@ void TrackingReceiver::ReceiveThread()
         oxrsys::runtime_socket::SetReceiveTimeout(socket_, 0, 5000);
 
         int received = oxrsys::runtime_socket::Receive(socket_, buffer, sizeof(buffer), 0);
-        if (received < static_cast<int>(sizeof(oxr::protocol::TrackingPacket)))
+        if (received < static_cast<int>(oxr::protocol::TRACKING_PACKET_BASE_SIZE))
         {
             continue;
         }
 
         oxr::protocol::TrackingPacket packet = {};
-        memcpy(&packet, buffer, sizeof(packet));
+        memcpy(&packet, buffer, std::min(static_cast<size_t>(received), sizeof(packet)));
         StorePacket(packet, SteadyClockNowNs());
     }
 }
 
 void TrackingReceiver::InjectPacket(const uint8_t* data, size_t size)
 {
-    if (size < sizeof(oxr::protocol::TrackingPacket))
+    if (size < oxr::protocol::TRACKING_PACKET_BASE_SIZE)
     {
         return;
     }
 
     oxr::protocol::TrackingPacket packet = {};
-    memcpy(&packet, data, sizeof(packet));
+    memcpy(&packet, data, std::min(size, sizeof(packet)));
     StorePacket(packet, SteadyClockNowNs());
 }
 
@@ -365,6 +365,44 @@ bool TrackingReceiver::GetPredictedPose(oxr::protocol::TrackingPacket& outPacket
                                      glm::radians(45.0f)));
     }
 
+    const bool previousLeftAimActive =
+        (previous.packet.trackingFlags &
+         oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE) != 0;
+    const bool currentLeftAimActive =
+        (current.packet.trackingFlags &
+         oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE) != 0;
+    if (previousLeftAimActive && currentLeftAimActive)
+    {
+        StoreVec3(outPacket.leftControllerAimPos,
+                  PredictPosition(LoadVec3(previous.packet.leftControllerAimPos),
+                                  LoadVec3(current.packet.leftControllerAimPos),
+                                  dtSeconds, positionHorizonSeconds, 6.0f));
+        StoreQuat(outPacket.leftControllerAimRot,
+                  PredictOrientation(LoadQuat(previous.packet.leftControllerAimRot),
+                                     LoadQuat(current.packet.leftControllerAimRot),
+                                     dtSeconds, controllerRotationHorizonSeconds,
+                                     glm::radians(45.0f)));
+    }
+
+    const bool previousRightAimActive =
+        (previous.packet.trackingFlags &
+         oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE) != 0;
+    const bool currentRightAimActive =
+        (current.packet.trackingFlags &
+         oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE) != 0;
+    if (previousRightAimActive && currentRightAimActive)
+    {
+        StoreVec3(outPacket.rightControllerAimPos,
+                  PredictPosition(LoadVec3(previous.packet.rightControllerAimPos),
+                                  LoadVec3(current.packet.rightControllerAimPos),
+                                  dtSeconds, positionHorizonSeconds, 6.0f));
+        StoreQuat(outPacket.rightControllerAimRot,
+                  PredictOrientation(LoadQuat(previous.packet.rightControllerAimRot),
+                                     LoadQuat(current.packet.rightControllerAimRot),
+                                     dtSeconds, controllerRotationHorizonSeconds,
+                                     glm::radians(45.0f)));
+    }
+
     return true;
 }
 
@@ -399,10 +437,14 @@ void TrackingReceiver::StorePacket(const oxr::protocol::TrackingPacket& packet, 
         const glm::quat* headReference = nullptr;
         const glm::quat* leftControllerReference = nullptr;
         const glm::quat* rightControllerReference = nullptr;
+        const glm::quat* leftControllerAimReference = nullptr;
+        const glm::quat* rightControllerAimReference = nullptr;
 
         glm::quat latestHeadQuat;
         glm::quat latestLeftControllerQuat;
         glm::quat latestRightControllerQuat;
+        glm::quat latestLeftControllerAimQuat;
+        glm::quat latestRightControllerAimQuat;
         if (hasData_.load())
         {
             latestHeadQuat = LoadQuat(latestPacket_.headOrientation);
@@ -411,6 +453,18 @@ void TrackingReceiver::StorePacket(const oxr::protocol::TrackingPacket& packet, 
             headReference = &latestHeadQuat;
             leftControllerReference = &latestLeftControllerQuat;
             rightControllerReference = &latestRightControllerQuat;
+            if ((latestPacket_.trackingFlags &
+                 oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE) != 0)
+            {
+                latestLeftControllerAimQuat = LoadQuat(latestPacket_.leftControllerAimRot);
+                leftControllerAimReference = &latestLeftControllerAimQuat;
+            }
+            if ((latestPacket_.trackingFlags &
+                 oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE) != 0)
+            {
+                latestRightControllerAimQuat = LoadQuat(latestPacket_.rightControllerAimRot);
+                rightControllerAimReference = &latestRightControllerAimQuat;
+            }
         }
 
         StoreQuat(normalizedPacket.headOrientation,
@@ -419,6 +473,20 @@ void TrackingReceiver::StorePacket(const oxr::protocol::TrackingPacket& packet, 
                   CanonicalizeQuat(LoadQuat(packet.leftControllerRot), leftControllerReference));
         StoreQuat(normalizedPacket.rightControllerRot,
                   CanonicalizeQuat(LoadQuat(packet.rightControllerRot), rightControllerReference));
+        if ((packet.trackingFlags &
+             oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE) != 0)
+        {
+            StoreQuat(normalizedPacket.leftControllerAimRot,
+                      CanonicalizeQuat(LoadQuat(packet.leftControllerAimRot),
+                                       leftControllerAimReference));
+        }
+        if ((packet.trackingFlags &
+             oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE) != 0)
+        {
+            StoreQuat(normalizedPacket.rightControllerAimRot,
+                      CanonicalizeQuat(LoadQuat(packet.rightControllerAimRot),
+                                       rightControllerAimReference));
+        }
 
         latestPacket_ = normalizedPacket;
         history_.push_back({normalizedPacket, receiveTimeNs});

@@ -62,6 +62,7 @@ public:
     bool GetButtonClick(Hand hand, const std::string& componentPath) const;
     bool IsInputDeviceActive(Hand hand) const;
     bool IsControllerTrackingActive(Hand hand) const;
+    bool IsControllerAimTrackingActive(Hand hand) const;
     bool IsHandTrackingActive(Hand hand) const;
     std::string GetCurrentInteractionProfile(Hand hand) const;
     std::vector<std::string> GetCurrentInteractionProfileCandidates(Hand hand) const;
@@ -112,6 +113,7 @@ private:
     void GenerateHandJoints(Hand hand, const glm::vec3& palmPos, const glm::quat& palmRot,
                              XrHandJointLocationEXT* joints, uint32_t jointCount) const;
     XrPosef GetTrackedHandPose(Hand hand, const std::string& componentPath) const;
+    XrPosef GetControllerAimPose(Hand hand) const;
     float GetTrackedPinchValue(Hand hand) const;
     float GetTrackedGraspValue(Hand hand) const;
 
@@ -121,6 +123,8 @@ private:
     glm::quat headQuat_ = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // w,x,y,z
     glm::quat leftControllerRot_ = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     glm::quat rightControllerRot_ = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    glm::quat leftControllerAimRot_ = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    glm::quat rightControllerAimRot_ = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     glm::vec3 headPosition_ = {0.0f, 1.6f, 0.0f};
 
     // Streaming controller state
@@ -132,12 +136,16 @@ private:
     XrVector2f rightThumbstick_ = {0.0f, 0.0f};
     uint32_t buttonState_ = 0;
     std::array<bool, 2> streamingControllerActive_ = {false, false};
+    std::array<bool, 2> streamingControllerAimActive_ = {false, false};
+    std::array<bool, 2> streamingControllerKnown_ = {false, false};
     std::string streamingClientName_;
     std::string streamingControllerProfile_;
 
     // Controller positions (world space offsets)
     glm::vec3 leftControllerPos_ = {-0.2f, 1.3f, -0.4f};
     glm::vec3 rightControllerPos_ = {0.2f, 1.3f, -0.4f};
+    glm::vec3 leftControllerAimPos_ = {-0.2f, 1.3f, -0.4f};
+    glm::vec3 rightControllerAimPos_ = {0.2f, 1.3f, -0.4f};
 
     // Button states
     bool leftGrab_ = false;

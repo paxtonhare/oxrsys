@@ -194,6 +194,7 @@ private:
     XrAction triggerAction_ = XR_NULL_HANDLE;
     XrAction gripAction_ = XR_NULL_HANDLE;
     XrAction thumbstickAction_ = XR_NULL_HANDLE;
+    XrAction thumbstickClickAction_ = XR_NULL_HANDLE;
     XrAction aButtonAction_ = XR_NULL_HANDLE;
     XrAction bButtonAction_ = XR_NULL_HANDLE;
     XrAction menuAction_ = XR_NULL_HANDLE;

@@ -83,6 +83,14 @@ namespace
 constexpr auto kUsbAdbRetryInterval = std::chrono::seconds(1);
 constexpr uint32_t kUsbAdbRetryLogInterval = 10;
 
+bool HasVerifiedMain10Decoder(const char* systemName)
+{
+    // Quest 3 has been validated end-to-end with the OXRSys HEVC Main10 stream.
+    // Keep other Android headsets on the negotiated 8-bit fallback until their
+    // MediaCodec Main10 path has been verified as well.
+    return systemName != nullptr && std::strcmp(systemName, "Meta Quest 3") == 0;
+}
+
 const char* VideoCodecName(oxr::protocol::VideoCodec codec)
 {
     switch (codec)
@@ -2813,6 +2821,10 @@ void XrApp::SendClientConnect(const char* serverIp)
         protocol::CLIENT_CAPABILITY_FOVEATED_ENCODING |
         protocol::CLIENT_CAPABILITY_CLIENT_UPSCALING |
         protocol::CLIENT_CAPABILITY_STREAM_RECONFIGURE;
+    if (HasVerifiedMain10Decoder(headsetSystemName_))
+    {
+        connect.clientCapabilities |= protocol::CLIENT_CAPABILITY_TEN_BIT_ENCODING;
+    }
     if (foveationAvailable_ && foveationConfigurationAvailable_ && swapchainUpdateAvailable_)
     {
         connect.clientCapabilities |= protocol::CLIENT_CAPABILITY_CLIENT_FOVEATION;

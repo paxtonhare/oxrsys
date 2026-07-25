@@ -91,6 +91,13 @@ The property is passed through Gradle into CMake as
 `80`, `90`, or `120`. If the headset runtime does not advertise the server-requested rate, the client
 logs the mismatch and keeps the current headset refresh.
 
+## HEVC Main10
+
+Quest 3 advertises its hardware-verified HEVC Main10 decode capability. When
+`streaming.encoder_10bit = true` and H.265 is selected, the runtime sends a 10-bit stream; otherwise
+the normal 8-bit H.265 path remains active. Other Android headset models continue to advertise only
+the 8-bit fallback until their MediaCodec Main10 path has been validated.
+
 ## Runtime Interaction
 
 The Android client:

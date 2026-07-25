@@ -122,6 +122,63 @@ kernel void foveation_kernel(texture2d<float, access::sample> leftTexture [[text
 }
 )METAL";
 
+constexpr const char* kP010ConversionMetalSource = R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+
+static float p010_storage_value(float tenBitCode)
+{
+    return (round(tenBitCode) * 64.0) / 65535.0;
+}
+
+static float3 bt709_video_range(float3 rgb)
+{
+    float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+    float y = clamp(64.0 + 876.0 * luma, 64.0, 940.0);
+    float cb = clamp(512.0 + 896.0 * ((rgb.b - luma) / 1.8556), 64.0, 960.0);
+    float cr = clamp(512.0 + 896.0 * ((rgb.r - luma) / 1.5748), 64.0, 960.0);
+    return float3(y, cb, cr);
+}
+
+kernel void bgra_to_p010(
+    texture2d<float, access::read> rgbTexture [[texture(0)]],
+    texture2d<float, access::write> lumaTexture [[texture(1)]],
+    texture2d<float, access::write> chromaTexture [[texture(2)]],
+    uint2 chromaPosition [[thread_position_in_grid]])
+{
+    if (chromaPosition.x >= chromaTexture.get_width() ||
+        chromaPosition.y >= chromaTexture.get_height())
+    {
+        return;
+    }
+
+    const uint2 basePosition = chromaPosition * 2;
+    float cbSum = 0.0;
+    float crSum = 0.0;
+
+    for (uint y = 0; y < 2; ++y)
+    {
+        for (uint x = 0; x < 2; ++x)
+        {
+            const uint2 position = basePosition + uint2(x, y);
+            const float3 yCbCr = bt709_video_range(rgbTexture.read(position).rgb);
+            lumaTexture.write(
+                float4(p010_storage_value(yCbCr.x), 0.0, 0.0, 1.0),
+                position);
+            cbSum += yCbCr.y;
+            crSum += yCbCr.z;
+        }
+    }
+
+    chromaTexture.write(
+        float4(p010_storage_value(cbSum * 0.25),
+               p010_storage_value(crSum * 0.25),
+               0.0,
+               1.0),
+        chromaPosition);
+}
+)METAL";
+
 void FinalizeEncodeFrame(EncodeFrameContext* context, bool frameDropped)
 {
     if (context == nullptr)
@@ -413,6 +470,40 @@ id<MTLComputePipelineState> CreateFoveationPipeline(id<MTLDevice> device)
     return pipeline;
 }
 
+id<MTLComputePipelineState> CreateP010ConversionPipeline(id<MTLDevice> device)
+{
+    NSError* error = nil;
+    NSString* source = [NSString stringWithUTF8String:kP010ConversionMetalSource];
+    id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
+    if (library == nil)
+    {
+        spdlog::error("VideoEncoder: Failed to compile P010 conversion shader: {}",
+                      error != nil ? error.localizedDescription.UTF8String : "unknown error");
+        return nil;
+    }
+
+    id<MTLFunction> kernelFunction = [library newFunctionWithName:@"bgra_to_p010"];
+    if (kernelFunction == nil)
+    {
+        spdlog::error("VideoEncoder: Failed to load P010 conversion shader entry point");
+        [library release];
+        return nil;
+    }
+
+    error = nil;
+    id<MTLComputePipelineState> pipeline =
+        [device newComputePipelineStateWithFunction:kernelFunction error:&error];
+    if (pipeline == nil)
+    {
+        spdlog::error("VideoEncoder: Failed to create P010 conversion pipeline: {}",
+                      error != nil ? error.localizedDescription.UTF8String : "unknown error");
+    }
+
+    [kernelFunction release];
+    [library release];
+    return pipeline;
+}
+
 id<MTLSamplerState> CreateLinearClampSampler(id<MTLDevice> device)
 {
     MTLSamplerDescriptor* descriptor = [[MTLSamplerDescriptor alloc] init];
@@ -525,6 +616,23 @@ bool VideoEncoder::Initialize(uint32_t width, uint32_t height, uint32_t fps,
 
     videoToolbox_.commandQueue = (void*)[device newCommandQueue];
     videoToolbox_.scaler = (void*)[[MPSImageBilinearScale alloc] initWithDevice:device];
+    const bool useP010 = tenBit_ && codec_ == oxr::protocol::VideoCodec::H265;
+    if (useP010)
+    {
+        if ((width_ % 2u) != 0 || (height_ % 2u) != 0)
+        {
+            spdlog::error("VideoEncoder: Main10 requires even dimensions, got {}x{}",
+                          width_, height_);
+            Shutdown();
+            return false;
+        }
+        videoToolbox_.p010ConversionPipeline = (void*)CreateP010ConversionPipeline(device);
+        if (videoToolbox_.p010ConversionPipeline == nullptr)
+        {
+            Shutdown();
+            return false;
+        }
+    }
     if (foveationSettings_.enabled)
     {
         videoToolbox_.foveationPipeline = (void*)CreateFoveationPipeline(device);
@@ -550,10 +658,13 @@ bool VideoEncoder::Initialize(uint32_t width, uint32_t height, uint32_t fps,
     NSDictionary* poolConfig = @{
         (NSString*)kCVPixelBufferPoolMinimumBufferCountKey: @(SlotCount),
     };
+    const OSType pixelFormat = useP010
+        ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        : kCVPixelFormatType_32BGRA;
     NSDictionary* poolAttrs = @{
         (NSString*)kCVPixelBufferWidthKey: @(width),
         (NSString*)kCVPixelBufferHeightKey: @(height),
-        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (NSString*)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat),
         (NSString*)kCVPixelBufferIOSurfacePropertiesKey: @{},
         (NSString*)kCVPixelBufferMetalCompatibilityKey: @YES,
     };
@@ -571,6 +682,18 @@ bool VideoEncoder::Initialize(uint32_t width, uint32_t height, uint32_t fps,
         return false;
     }
     videoToolbox_.pixelBufferPool = pool;
+
+    MTLTextureDescriptor* rgbDesc = nil;
+    if (useP010)
+    {
+        rgbDesc = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                         width:MAX((uint32_t)1, width_)
+                                        height:MAX((uint32_t)1, height_)
+                                     mipmapped:NO];
+        rgbDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+        rgbDesc.storageMode = MTLStorageModePrivate;
+    }
 
     MTLTextureDescriptor* tmpDesc = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -604,27 +727,91 @@ bool VideoEncoder::Initialize(uint32_t width, uint32_t height, uint32_t fps,
             return false;
         }
 
-        CVMetalTextureRef cvMetalTexture = nullptr;
-        cvResult = CVMetalTextureCacheCreateTextureFromImage(
-            kCFAllocatorDefault,
-            (CVMetalTextureCacheRef)videoToolbox_.textureCache,
-            pixelBuffer,
-            nullptr,
-            MTLPixelFormatBGRA8Unorm,
-            width_,
-            height_,
-            0,
-            &cvMetalTexture);
-        if (cvResult != kCVReturnSuccess || cvMetalTexture == nullptr)
+        slots_[i].pixelBuffer = pixelBuffer;
+        if (useP010)
         {
-            spdlog::error("VideoEncoder: Failed to create Metal texture for slot {}", i);
-            CVPixelBufferRelease(pixelBuffer);
-            Shutdown();
-            return false;
+            CVBufferSetAttachment(pixelBuffer,
+                                  kCVImageBufferColorPrimariesKey,
+                                  kCVImageBufferColorPrimaries_ITU_R_709_2,
+                                  kCVAttachmentMode_ShouldPropagate);
+            CVBufferSetAttachment(pixelBuffer,
+                                  kCVImageBufferTransferFunctionKey,
+                                  kCVImageBufferTransferFunction_ITU_R_709_2,
+                                  kCVAttachmentMode_ShouldPropagate);
+            CVBufferSetAttachment(pixelBuffer,
+                                  kCVImageBufferYCbCrMatrixKey,
+                                  kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                                  kCVAttachmentMode_ShouldPropagate);
+
+            CVMetalTextureRef lumaMetalTexture = nullptr;
+            cvResult = CVMetalTextureCacheCreateTextureFromImage(
+                kCFAllocatorDefault,
+                (CVMetalTextureCacheRef)videoToolbox_.textureCache,
+                pixelBuffer,
+                nullptr,
+                MTLPixelFormatR16Unorm,
+                width_,
+                height_,
+                0,
+                &lumaMetalTexture);
+            if (cvResult != kCVReturnSuccess || lumaMetalTexture == nullptr)
+            {
+                spdlog::error("VideoEncoder: Failed to create P010 luma texture for slot {}", i);
+                Shutdown();
+                return false;
+            }
+
+            CVMetalTextureRef chromaMetalTexture = nullptr;
+            cvResult = CVMetalTextureCacheCreateTextureFromImage(
+                kCFAllocatorDefault,
+                (CVMetalTextureCacheRef)videoToolbox_.textureCache,
+                pixelBuffer,
+                nullptr,
+                MTLPixelFormatRG16Unorm,
+                width_ / 2,
+                height_ / 2,
+                1,
+                &chromaMetalTexture);
+            if (cvResult != kCVReturnSuccess || chromaMetalTexture == nullptr)
+            {
+                spdlog::error("VideoEncoder: Failed to create P010 chroma texture for slot {}", i);
+                CFRelease(lumaMetalTexture);
+                Shutdown();
+                return false;
+            }
+
+            slots_[i].rgbTexture = (void*)[device newTextureWithDescriptor:rgbDesc];
+            slots_[i].lumaMetalTexture = lumaMetalTexture;
+            slots_[i].chromaMetalTexture = chromaMetalTexture;
+            if (slots_[i].rgbTexture == nullptr)
+            {
+                spdlog::error("VideoEncoder: Failed to create combined RGB texture for slot {}", i);
+                Shutdown();
+                return false;
+            }
+        }
+        else
+        {
+            CVMetalTextureRef cvMetalTexture = nullptr;
+            cvResult = CVMetalTextureCacheCreateTextureFromImage(
+                kCFAllocatorDefault,
+                (CVMetalTextureCacheRef)videoToolbox_.textureCache,
+                pixelBuffer,
+                nullptr,
+                MTLPixelFormatBGRA8Unorm,
+                width_,
+                height_,
+                0,
+                &cvMetalTexture);
+            if (cvResult != kCVReturnSuccess || cvMetalTexture == nullptr)
+            {
+                spdlog::error("VideoEncoder: Failed to create Metal texture for slot {}", i);
+                Shutdown();
+                return false;
+            }
+            slots_[i].metalTexture = cvMetalTexture;
         }
 
-        slots_[i].pixelBuffer = pixelBuffer;
-        slots_[i].metalTexture = cvMetalTexture;
         slots_[i].tmpLeftTexture = (void*)[device newTextureWithDescriptor:tmpDesc];
         slots_[i].tmpRightTexture = (void*)[device newTextureWithDescriptor:tmpDesc];
         if (foveatedScratchDesc != nil)
@@ -769,18 +956,30 @@ void VideoEncoder::Shutdown()
 {
     shuttingDown_.store(true);
 
-    if (videoToolbox_.session != nullptr)
     {
-        VTCompressionSessionRef compressionSession = (VTCompressionSessionRef)videoToolbox_.session;
-        VTCompressionSessionCompleteFrames(compressionSession, kCMTimeInvalid);
-        VTCompressionSessionInvalidate(compressionSession);
-        CFRelease(compressionSession);
-        videoToolbox_.session = nullptr;
+        std::lock_guard<std::mutex> lock(videoToolboxSessionMutex_);
+        if (videoToolbox_.session != nullptr)
+        {
+            VTCompressionSessionCompleteFrames(
+                (VTCompressionSessionRef)videoToolbox_.session, kCMTimeInvalid);
+        }
     }
 
-    for (int i = 0; i < 200 && inFlightFrameCount_.load() > 0; i++)
+    for (int i = 0; i < 5000 && inFlightFrameCount_.load() > 0; i++)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(videoToolboxSessionMutex_);
+        if (videoToolbox_.session != nullptr)
+        {
+            VTCompressionSessionRef compressionSession =
+                (VTCompressionSessionRef)videoToolbox_.session;
+            VTCompressionSessionInvalidate(compressionSession);
+            CFRelease(compressionSession);
+            videoToolbox_.session = nullptr;
+        }
     }
 
     DestroySlots();
@@ -794,6 +993,11 @@ void VideoEncoder::Shutdown()
     {
         [(id<MTLComputePipelineState>)videoToolbox_.foveationPipeline release];
         videoToolbox_.foveationPipeline = nullptr;
+    }
+    if (videoToolbox_.p010ConversionPipeline != nullptr)
+    {
+        [(id<MTLComputePipelineState>)videoToolbox_.p010ConversionPipeline release];
+        videoToolbox_.p010ConversionPipeline = nullptr;
     }
     if (videoToolbox_.foveationSampler != nullptr)
     {
@@ -840,6 +1044,7 @@ bool VideoEncoder::EncodeInternal(FrameSource frameSource, bool stereo,
                                    int64_t timestampNs, OnNalUnitCallback callback,
                                    OnFrameEncodedCallback frameCallback)
 {
+    std::unique_lock<std::mutex> sessionLock(videoToolboxSessionMutex_);
     if (videoToolbox_.session == nullptr ||
         !frameSource.left.IsValid() ||
         (stereo && !frameSource.right.IsValid()))
@@ -868,8 +1073,20 @@ bool VideoEncoder::EncodeInternal(FrameSource frameSource, bool stereo,
     BufferSlot& slot = slots_[slotIndex];
     CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)slot.pixelBuffer;
     CVMetalTextureRef cvMetalTexture = (CVMetalTextureRef)slot.metalTexture;
-    id<MTLTexture> dstTexture = CVMetalTextureGetTexture(cvMetalTexture);
-    if (pixelBuffer == nullptr || cvMetalTexture == nullptr || dstTexture == nil)
+    CVMetalTextureRef lumaMetalTexture = (CVMetalTextureRef)slot.lumaMetalTexture;
+    CVMetalTextureRef chromaMetalTexture = (CVMetalTextureRef)slot.chromaMetalTexture;
+    const bool useP010 = tenBit_ && codec_ == oxr::protocol::VideoCodec::H265;
+    id<MTLTexture> dstTexture = useP010
+        ? (id<MTLTexture>)slot.rgbTexture
+        : (cvMetalTexture != nullptr ? CVMetalTextureGetTexture(cvMetalTexture) : nil);
+    id<MTLTexture> lumaTexture = lumaMetalTexture != nullptr
+        ? CVMetalTextureGetTexture(lumaMetalTexture)
+        : nil;
+    id<MTLTexture> chromaTexture = chromaMetalTexture != nullptr
+        ? CVMetalTextureGetTexture(chromaMetalTexture)
+        : nil;
+    if (pixelBuffer == nullptr || dstTexture == nil ||
+        (useP010 && (lumaTexture == nil || chromaTexture == nil)))
     {
         ReleaseSlot(slotIndex);
         return false;
@@ -1163,6 +1380,34 @@ bool VideoEncoder::EncodeInternal(FrameSource frameSource, bool stereo,
         [blit endEncoding];
     }
 
+    if (useP010)
+    {
+        id<MTLComputeCommandEncoder> p010Encoder = [cmdBuf computeCommandEncoder];
+        id<MTLComputePipelineState> p010Pipeline =
+            (id<MTLComputePipelineState>)videoToolbox_.p010ConversionPipeline;
+        if (p010Encoder == nil || p010Pipeline == nil)
+        {
+            return dropAcquiredSlot("failed to create P010 conversion encoder");
+        }
+        [p010Encoder setComputePipelineState:p010Pipeline];
+        [p010Encoder setTexture:dstTexture atIndex:0];
+        [p010Encoder setTexture:lumaTexture atIndex:1];
+        [p010Encoder setTexture:chromaTexture atIndex:2];
+
+        const NSUInteger threadsX = std::max<NSUInteger>(
+            1, std::min<NSUInteger>(p010Pipeline.threadExecutionWidth, 16));
+        const NSUInteger threadsY = std::max<NSUInteger>(
+            1, std::min<NSUInteger>(p010Pipeline.maxTotalThreadsPerThreadgroup / threadsX, 16));
+        const MTLSize threadsPerGroup = MTLSizeMake(threadsX, threadsY, 1);
+        const MTLSize threadgroups = MTLSizeMake(
+            (chromaTexture.width + threadsX - 1) / threadsX,
+            (chromaTexture.height + threadsY - 1) / threadsY,
+            1);
+        [p010Encoder dispatchThreadgroups:threadgroups
+                    threadsPerThreadgroup:threadsPerGroup];
+        [p010Encoder endEncoding];
+    }
+
     auto* context = new EncodeFrameContext();
     context->nalCallback = std::move(callback);
     context->frameCallback = std::move(frameCallback);
@@ -1178,10 +1423,9 @@ bool VideoEncoder::EncodeInternal(FrameSource frameSource, bool stereo,
     context->encodeStart = Clock::now();
     context->encodeSubmitFinished = context->encodeStart;
 
-    VTCompressionSessionRef compressionSession = (VTCompressionSessionRef)videoToolbox_.session;
     [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> commandBuffer)
     {
-        if (commandBuffer.status != MTLCommandBufferStatusCompleted || this->shuttingDown_.load())
+        if (commandBuffer.status != MTLCommandBufferStatusCompleted)
         {
             FinalizeEncodeFrame(context, true);
             return;
@@ -1200,14 +1444,26 @@ bool VideoEncoder::EncodeInternal(FrameSource frameSource, bool stereo,
 
         CMTime presentationTime = CMTimeMake(timestampNs, 1000000000);
         auto submitStart = Clock::now();
-        OSStatus status = VTCompressionSessionEncodeFrame(
-            compressionSession,
-            pixelBuffer,
-            presentationTime,
-            kCMTimeInvalid,
-            frameProps,
-            context,
-            nullptr);
+        OSStatus status = noErr;
+        bool skippedForShutdown = false;
+        {
+            std::lock_guard<std::mutex> lock(this->videoToolboxSessionMutex_);
+            if (this->shuttingDown_.load() || this->videoToolbox_.session == nullptr)
+            {
+                skippedForShutdown = true;
+            }
+            else
+            {
+                status = VTCompressionSessionEncodeFrame(
+                    (VTCompressionSessionRef)this->videoToolbox_.session,
+                    pixelBuffer,
+                    presentationTime,
+                    kCMTimeInvalid,
+                    frameProps,
+                    context,
+                    nullptr);
+            }
+        }
         context->metrics.encodeSubmitMs = ToMilliseconds(Clock::now() - submitStart);
         context->encodeSubmitFinished = Clock::now();
 
@@ -1216,7 +1472,11 @@ bool VideoEncoder::EncodeInternal(FrameSource frameSource, bool stereo,
             CFRelease(frameProps);
         }
 
-        if (status != noErr)
+        if (skippedForShutdown)
+        {
+            FinalizeEncodeFrame(context, true);
+        }
+        else if (status != noErr)
         {
             spdlog::warn("VideoEncoder: VTCompressionSessionEncodeFrame failed: {}", status);
             FinalizeEncodeFrame(context, true);
@@ -1300,6 +1560,21 @@ void VideoEncoder::DestroySlots()
             CFRelease(slot.metalTexture);
             slot.metalTexture = nullptr;
         }
+        if (slot.rgbTexture != nullptr)
+        {
+            [(id<MTLTexture>)slot.rgbTexture release];
+            slot.rgbTexture = nullptr;
+        }
+        if (slot.lumaMetalTexture != nullptr)
+        {
+            CFRelease(slot.lumaMetalTexture);
+            slot.lumaMetalTexture = nullptr;
+        }
+        if (slot.chromaMetalTexture != nullptr)
+        {
+            CFRelease(slot.chromaMetalTexture);
+            slot.chromaMetalTexture = nullptr;
+        }
         if (slot.pixelBuffer != nullptr)
         {
             CVPixelBufferRelease((CVPixelBufferRef)slot.pixelBuffer);
@@ -1317,6 +1592,7 @@ void VideoEncoder::ForceKeyframe()
 
 void VideoEncoder::SetBitrate(uint32_t bitrateMbps)
 {
+    std::lock_guard<std::mutex> lock(videoToolboxSessionMutex_);
     if (videoToolbox_.session == nullptr || bitrateMbps == bitrateMbps_)
     {
         return;

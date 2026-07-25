@@ -90,6 +90,7 @@ public:
 
     bool IsInitialized() const
     {
+        std::lock_guard<std::mutex> lock(videoToolboxSessionMutex_);
         return videoToolbox_.session != nullptr || ffmpeg_.codecContext != nullptr;
     }
 
@@ -103,6 +104,9 @@ private:
     {
         void* pixelBuffer = nullptr;      // CVPixelBufferRef
         void* metalTexture = nullptr;     // CVMetalTextureRef
+        void* rgbTexture = nullptr;       // id<MTLTexture>, Main10 RGB scratch
+        void* lumaMetalTexture = nullptr; // CVMetalTextureRef, Main10 P010 Y plane
+        void* chromaMetalTexture = nullptr; // CVMetalTextureRef, Main10 P010 CbCr plane
         void* tmpLeftTexture = nullptr;   // id<MTLTexture>
         void* tmpRightTexture = nullptr;  // id<MTLTexture>
         void* foveatedScratchTexture = nullptr; // id<MTLTexture>
@@ -127,6 +131,7 @@ private:
         void* commandQueue = nullptr;     // id<MTLCommandQueue>
         void* scaler = nullptr;           // MPSImageBilinearScale*
         void* foveationPipeline = nullptr; // id<MTLComputePipelineState>
+        void* p010ConversionPipeline = nullptr; // id<MTLComputePipelineState>
         void* foveationSampler = nullptr;  // id<MTLSamplerState>
     };
 
@@ -157,6 +162,7 @@ private:
     std::atomic<uint32_t> droppedFrameCount_{0};
     std::atomic<uint32_t> inFlightFrameCount_{0};
     std::atomic<uint64_t> frameNumberCounter_{0};
+    mutable std::mutex videoToolboxSessionMutex_;
     std::mutex slotMutex_;
     static constexpr size_t SlotCount = 3;
     std::array<BufferSlot, SlotCount> slots_{};

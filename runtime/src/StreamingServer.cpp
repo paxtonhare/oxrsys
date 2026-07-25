@@ -1448,6 +1448,7 @@ void StreamingServer::EncodeThread()
         }
 
         const uint32_t submittedFrameIndex = frame.frameIndex;
+        std::weak_ptr<VideoEncoder> weakEncoder = encoder;
         bool encoded = encoder->EncodeStereo(
             std::move(frame.source),
             frame.timestampNs,
@@ -1482,7 +1483,7 @@ void StreamingServer::EncodeThread()
                 memcpy(nal.tcpPayload.data() + sizeof(nalHeader), nalData, nalSize);
                 encodedFrame->nals.push_back(std::move(nal));
             },
-            [callbackAccess, telemetry, queueWaitMs, encoder, config, encodedFrame](
+            [callbackAccess, telemetry, queueWaitMs, weakEncoder, config, encodedFrame](
                 const VideoEncoder::FrameMetrics& metrics)
             {
                 std::lock_guard<std::mutex> callbackLock(callbackAccess->mutex);
@@ -1527,7 +1528,10 @@ void StreamingServer::EncodeThread()
                     MetricSummary totalSummary = telemetry->totalPipelineMs.Consume();
 
                     const uint32_t replacedFrames = server->replacedFrameCount_.exchange(0);
-                    const uint32_t encoderDrops = encoder->GetDroppedFrameCount();
+                    const std::shared_ptr<VideoEncoder> liveEncoder = weakEncoder.lock();
+                    const uint32_t encoderDrops = liveEncoder
+                        ? liveEncoder->GetDroppedFrameCount()
+                        : server->encoderDroppedFramesTotalForAbr_.load();
                     const uint32_t keyframeRequests = server->requestKeyframeCount_.exchange(0);
                     const uint32_t pendingDepthMax = server->pendingFrameDepthMax_.exchange(0);
                     const uint32_t videoSendDepthMax = server->videoSendQueueDepthMax_.exchange(0);
@@ -1631,7 +1635,9 @@ void StreamingServer::EncodeThread()
                     stats.encodeCallbackP95Ms = callbackSummary.p95;
                     stats.encodeTotalAverageMs = totalSummary.average;
                     stats.encodeTotalP95Ms = totalSummary.p95;
-                    stats.encodedFramesTotal = encoder->GetEncodedFrameCount();
+                    stats.encodedFramesTotal = liveEncoder
+                        ? liveEncoder->GetEncodedFrameCount()
+                        : static_cast<uint32_t>(metrics.frameNumber + 1);
                     stats.encoderDroppedFramesTotal = encoderDrops;
                     stats.replacedFramesDelta = replacedFrames;
                     stats.keyframeRequestsDelta = keyframeRequests;

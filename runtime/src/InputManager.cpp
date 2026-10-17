@@ -681,6 +681,7 @@ std::vector<std::string> InputManager::GetCurrentInteractionProfileCandidates(Ha
             {
                 AddProfileIfMissing(candidates, kOculusTouchProfile);
             }
+            AddProfileIfMissing(candidates, kSimpleControllerProfile);
             return candidates;
         };
 
@@ -697,7 +698,7 @@ std::vector<std::string> InputManager::GetCurrentInteractionProfileCandidates(Ha
         }
     }
 
-    if (IsControllerTrackingActive(hand))
+    if (IsControllerTrackingActive(hand) || IsControllerAimTrackingActive(hand))
     {
         return streamingControllerCandidates();
     }
@@ -733,7 +734,7 @@ std::vector<std::string> InputManager::GetActiveInteractionProfiles(Hand hand) c
         return profiles;
     }
 
-    if (IsControllerTrackingActive(hand))
+    if (IsControllerTrackingActive(hand) || IsControllerAimTrackingActive(hand))
     {
         if (currentProfile.find("/interaction_profiles/meta/") == 0 ||
             currentProfile == kOculusTouchProfile)
@@ -1036,17 +1037,20 @@ XrSpaceVelocity InputManager::GetPoseVelocityForProfile(Hand hand, const std::st
     {
         return {XR_TYPE_SPACE_VELOCITY};
     }
+    const glm::vec3& pos = hand == Hand::Left ? leftControllerAimPos_ : rightControllerAimPos_;
+    const glm::quat& rot = hand == Hand::Left ? leftControllerAimRot_ : rightControllerAimRot_;
+    const bool aim = componentPath == "aim/pose" && !IsUnsetAimPose(pos, rot);
     const uint32_t activeFlag = hand == Hand::Left
         ? oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE
         : oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE;
-    if ((packet.trackingFlags & activeFlag) == 0)
+    const uint32_t aimActiveFlag = hand == Hand::Left
+        ? oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE
+        : oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE;
+    if ((packet.trackingFlags & (activeFlag | (aim ? aimActiveFlag : 0))) == 0)
     {
         return {XR_TYPE_SPACE_VELOCITY};
     }
 
-    const glm::vec3& pos = hand == Hand::Left ? leftControllerAimPos_ : rightControllerAimPos_;
-    const glm::quat& rot = hand == Hand::Left ? leftControllerAimRot_ : rightControllerAimRot_;
-    const bool aim = componentPath == "aim/pose" && !IsUnsetAimPose(pos, rot);
     if (hand == Hand::Left)
     {
         return ReadTrackedVelocity(

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "InputManager.h"
@@ -222,6 +223,15 @@ TEST_CASE("InputManager keeps grip and aim velocity sources distinct", "[input][
     packet.rightControllerAimLinearVelocity[0] = 7.0f;
     packet.rightControllerAimAngularVelocity[1] = 8.0f;
 
+    const bool aimOnly = GENERATE(false, true);
+    if (aimOnly)
+    {
+        packet.trackingFlags &= ~(oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE |
+                                  oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE);
+        packet.trackingFlags |= oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE |
+                                oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE;
+    }
+    CAPTURE(aimOnly);
     receiver.InjectPacket(reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
     im.Update(0.0f);
     const std::string profile = "/interaction_profiles/oculus/touch_controller";
@@ -230,14 +240,14 @@ TEST_CASE("InputManager keeps grip and aim velocity sources distinct", "[input][
     const XrSpaceVelocity leftAim = im.GetPoseVelocityForProfile(InputManager::Hand::Left, "aim/pose", profile);
     const XrSpaceVelocity rightAim = im.GetPoseVelocityForProfile(InputManager::Hand::Right, "aim/pose", profile);
     const XrSpaceVelocityFlags validFlags = XR_SPACE_VELOCITY_LINEAR_VALID_BIT | XR_SPACE_VELOCITY_ANGULAR_VALID_BIT;
-    CHECK(leftGrip.velocityFlags == validFlags);
-    CHECK(rightGrip.velocityFlags == validFlags);
+    CHECK(leftGrip.velocityFlags == (aimOnly ? 0 : validFlags));
+    CHECK(rightGrip.velocityFlags == (aimOnly ? 0 : validFlags));
     CHECK(leftAim.velocityFlags == validFlags);
     CHECK(rightAim.velocityFlags == validFlags);
-    CHECK(leftGrip.linearVelocity.x == 1.0f);
-    CHECK(leftGrip.angularVelocity.y == 2.0f);
-    CHECK(rightGrip.linearVelocity.x == 3.0f);
-    CHECK(rightGrip.angularVelocity.y == 4.0f);
+    CHECK(leftGrip.linearVelocity.x == (aimOnly ? 0.0f : 1.0f));
+    CHECK(leftGrip.angularVelocity.y == (aimOnly ? 0.0f : 2.0f));
+    CHECK(rightGrip.linearVelocity.x == (aimOnly ? 0.0f : 3.0f));
+    CHECK(rightGrip.angularVelocity.y == (aimOnly ? 0.0f : 4.0f));
     CHECK(leftAim.linearVelocity.x == 5.0f);
     CHECK(leftAim.angularVelocity.y == 6.0f);
     CHECK(rightAim.linearVelocity.x == 7.0f);
@@ -1003,4 +1013,36 @@ TEST_CASE("Short tracking packets cannot assert independent aim activity", "[inp
     CHECK(received.trackingFlags == 0);
     CHECK(received.leftControllerAimRot[3] == 0.0f);
     CHECK(received.rightControllerAimRot[3] == 0.0f);
+}
+
+TEST_CASE("Aim velocity fallback requires grip activity for both hands", "[input][velocity]")
+{
+    using namespace oxr::protocol;
+    const bool gripActive = GENERATE(false, true);
+    InputManager im;
+    TrackingReceiver receiver;
+    im.SetTrackingReceiver(&receiver);
+    TrackingPacket packet{};
+    packet.headOrientation[3] = 1.0f;
+    packet.trackingFlags = TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE |
+        TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE |
+        TRACKING_FLAG_LEFT_CONTROLLER_LINEAR_VELOCITY_VALID |
+        TRACKING_FLAG_RIGHT_CONTROLLER_LINEAR_VELOCITY_VALID |
+        TRACKING_FLAG_LEFT_CONTROLLER_AIM_LINEAR_VELOCITY_VALID |
+        TRACKING_FLAG_RIGHT_CONTROLLER_AIM_LINEAR_VELOCITY_VALID;
+    if (gripActive)
+        packet.trackingFlags |= TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE | TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE;
+    packet.leftControllerLinearVelocity[0] = 2.0f;
+    packet.rightControllerLinearVelocity[0] = 3.0f;
+    packet.leftControllerAimLinearVelocity[0] = 8.0f;
+    packet.rightControllerAimLinearVelocity[0] = 9.0f;
+    receiver.InjectPacket(reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+    im.Update(0.0f);
+    for (auto hand : {InputManager::Hand::Left, InputManager::Hand::Right})
+    {
+        const auto velocity = im.GetPoseVelocityForProfile(hand, "aim/pose",
+            "/interaction_profiles/oculus/touch_controller");
+        CHECK(velocity.velocityFlags == (gripActive ? XR_SPACE_VELOCITY_LINEAR_VALID_BIT : 0));
+        CHECK(velocity.linearVelocity.x == (gripActive ? (hand == InputManager::Hand::Left ? 2.0f : 3.0f) : 0.0f));
+    }
 }

@@ -3546,3 +3546,91 @@ TEST_CASE("Distinct swapchains can be created and destroyed concurrently",
         CHECK(result == XR_SUCCESS);
     }
 }
+
+TEST_CASE("Controller aim-only packets retain bound compatibility profiles", "[runtime][actions]")
+{
+    const char* profileName = GENERATE("/interaction_profiles/khr/simple_controller",
+                                       "/interaction_profiles/oculus/touch_controller");
+    const bool handActive = GENERATE(false, true);
+    CAPTURE(profileName, handActive);
+    RuntimeSessionContext context({XR_KHR_METAL_ENABLE_EXTENSION_NAME});
+    const XrPath hand = context.Path("/user/hand/left");
+    const XrPath profile = context.Path(profileName);
+    XrActionSetCreateInfo setInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strcpy(setInfo.actionSetName, "aim_only");
+    std::strcpy(setInfo.localizedActionSetName, "Aim Only");
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateActionSet(context.instance, &setInfo, &actionSet));
+    XrActionCreateInfo actionInfo = {XR_TYPE_ACTION_CREATE_INFO};
+    actionInfo.actionType = XR_ACTION_TYPE_POSE_INPUT;
+    actionInfo.countSubactionPaths = 1;
+    actionInfo.subactionPaths = &hand;
+    std::strcpy(actionInfo.actionName, "aim");
+    std::strcpy(actionInfo.localizedActionName, "Aim");
+    XrAction aim = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateAction(actionSet, &actionInfo, &aim));
+    std::strcpy(actionInfo.actionName, "grip");
+    std::strcpy(actionInfo.localizedActionName, "Grip");
+    XrAction grip = XR_NULL_HANDLE;
+    XR_CHECK(xrCreateAction(actionSet, &actionInfo, &grip));
+    XrActionSuggestedBinding bindings[] = {
+        {aim, context.Path("/user/hand/left/input/aim/pose")},
+        {grip, context.Path("/user/hand/left/input/grip/pose")},
+    };
+    XrInteractionProfileSuggestedBinding suggested = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggested.interactionProfile = profile;
+    suggested.countSuggestedBindings = 2;
+    suggested.suggestedBindings = bindings;
+    XR_CHECK(xrSuggestInteractionProfileBindings(context.instance, &suggested));
+    XrSessionActionSetsAttachInfo attach = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attach.countActionSets = 1;
+    attach.actionSets = &actionSet;
+    XR_CHECK(xrAttachSessionActionSets(context.session, &attach));
+    XrActiveActionSet active = {actionSet, XR_NULL_PATH};
+    XrActionsSyncInfo sync = {XR_TYPE_ACTIONS_SYNC_INFO};
+    sync.countActiveActionSets = 1;
+    sync.activeActionSets = &active;
+    LoopbackTrackingPeer peer(false);
+    oxr::protocol::TrackingPacket packet{};
+    packet.headOrientation[3] = 1.0f;
+    packet.leftControllerAimRot[3] = 1.0f;
+    packet.leftControllerAimPos[0] = -0.25f;
+    packet.trackingFlags = oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE;
+    if (handActive)
+        packet.trackingFlags |= oxr::protocol::TRACKING_FLAG_LEFT_HAND_ACTIVE;
+    auto waitForAim = [&](bool expected) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do
+        {
+            peer.SendTracking(packet, sizeof(packet));
+            PumpTrackingFrame(context.session);
+            XR_CHECK(xrSyncActions(context.session, &sync));
+            XrActionStateGetInfo get = {XR_TYPE_ACTION_STATE_GET_INFO};
+            get.action = aim;
+            get.subactionPath = hand;
+            XrActionStatePose state = {XR_TYPE_ACTION_STATE_POSE};
+            XR_CHECK(xrGetActionStatePose(context.session, &get, &state));
+            if (state.isActive == (expected ? XR_TRUE : XR_FALSE))
+                return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    REQUIRE(waitForAim(true));
+    XrInteractionProfileState current = {XR_TYPE_INTERACTION_PROFILE_STATE};
+    XR_CHECK(xrGetCurrentInteractionProfile(context.session, hand, &current));
+    CHECK(current.interactionProfile == profile);
+    XrActionStateGetInfo get = {XR_TYPE_ACTION_STATE_GET_INFO};
+    get.action = grip;
+    get.subactionPath = hand;
+    XrActionStatePose gripState = {XR_TYPE_ACTION_STATE_POSE};
+    XR_CHECK(xrGetActionStatePose(context.session, &get, &gripState));
+    CHECK(gripState.isActive == XR_FALSE);
+    // Tracking loss must deactivate actions without unpairing compatibility profiles.
+    packet.trackingFlags = 0;
+    REQUIRE(waitForAim(false));
+    XR_CHECK(xrGetCurrentInteractionProfile(context.session, hand, &current));
+    CHECK(current.interactionProfile == profile);
+    XR_CHECK(xrDestroyAction(aim));
+    XR_CHECK(xrDestroyAction(grip));
+    XR_CHECK(xrDestroyActionSet(actionSet));
+}

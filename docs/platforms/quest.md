@@ -74,7 +74,8 @@ USB diagnostics use Android's official `UsbManager` host-device intents and filt
 
 The runtime announces the preferred display refresh selected in Home/config. The Android client
 requests that value through `XR_FB_display_refresh_rate` when the extension is available, reads the
-active headset rate again immediately before `ClientConnect`, then reports that value in
+active headset rate again immediately before `ClientConnect`, then reports the accepted request
+target (or the active rate when no request was accepted) in
 `ClientConnect.refreshRateHz`. Home exposes `60`, `72`, `80`, `90`, and `120` Hz. Client and server
 logs include the requested/server target and the active/negotiated rate so USB cadence mismatches can
 be diagnosed from logs.
@@ -97,7 +98,7 @@ The Android client:
 
 - tries USB ADB reverse TCP first, then falls back to local-network UDP discovery when USB is unavailable
 - returns to discovery/retry automatically when the runtime or OpenXR app session stops
-- connects and advertises codec, active refresh rate, streaming capabilities, and the headset OpenXR `systemName`
+- connects and advertises codec, negotiated refresh rate, streaming capabilities, and the headset OpenXR `systemName`
 - accepts protocol v1.2 stream reconfiguration messages on USB TCP when the runtime adjusts encoded resolution in `abr_mode = "full"`
 - requests the server-announced display refresh rate when `XR_FB_display_refresh_rate` is available
 - receives encoded video frames and matches render-pose metadata to each decoded frame before projection submission

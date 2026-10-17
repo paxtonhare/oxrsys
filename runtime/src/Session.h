@@ -4,6 +4,7 @@
 
 #include <openxr/openxr.h>
 #include "GraphicsTypes.h"
+#include "FramePacer.h"
 #include <memory>
 #include <vector>
 #include <chrono>
@@ -156,6 +157,7 @@ private:
     // CLOCK_MONOTONIC nanoseconds sampled at the same instant as startTime_.
     int64_t monoStartNs_ = 0;
     std::chrono::steady_clock::time_point lastFrameTime_;
+    FramePacer framePacer_;
 
     std::vector<DebugUtilsLabelState> debugUtilsLabelRegions_;
     std::optional<DebugUtilsLabelState> debugUtilsInsertedLabel_;

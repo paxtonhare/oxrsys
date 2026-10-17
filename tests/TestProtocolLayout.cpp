@@ -6,6 +6,7 @@
 #include <Protocol.h>
 
 #include <cstddef>
+#include "ControllerButtons.h"
 
 using namespace oxr::protocol;
 
@@ -69,6 +70,8 @@ TEST_CASE("C++ protocol layouts match the documented wire format", "[protocol]")
     STATIC_REQUIRE(offsetof(TrackingPacket, leftControllerAimAngularVelocity) == 1132);
     STATIC_REQUIRE(offsetof(TrackingPacket, rightControllerAimLinearVelocity) == 1144);
     STATIC_REQUIRE(offsetof(TrackingPacket, rightControllerAimAngularVelocity) == 1156);
+    STATIC_REQUIRE(TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE == 0x8000);
+    STATIC_REQUIRE(TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE == 0x10000);
     STATIC_REQUIRE(TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE == 0x0004);
     STATIC_REQUIRE(TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE == 0x0008);
     STATIC_REQUIRE(TRACKING_FLAG_HEAD_LINEAR_VELOCITY_VALID == 0x0010);
@@ -138,4 +141,25 @@ TEST_CASE("Quest foveated layout stays aligned and rejects incoherent targets", 
     const FoveationLayout scaledLayout =
         CalculateFoveationLayout(1136, 1264, FoveationPreset::Light);
     CHECK_FALSE(IsFoveatedEncodingLayoutUsable(scaledLayout, 1512, 1680));
+}
+
+TEST_CASE("Quest discrete controller inputs encode into the tracking button mask",
+          "[protocol][input]")
+{
+    ControllerButtonInputs inputs = {};
+    inputs.a = true;
+    inputs.y = true;
+    inputs.menu = true;
+    inputs.leftThumbstick = true;
+    inputs.rightThumbstick = true;
+
+    const uint32_t buttons = EncodeControllerButtonInputs(inputs);
+
+    CHECK((buttons & BUTTON_A) != 0);
+    CHECK((buttons & BUTTON_B) == 0);
+    CHECK((buttons & BUTTON_X) == 0);
+    CHECK((buttons & BUTTON_Y) != 0);
+    CHECK((buttons & BUTTON_MENU) != 0);
+    CHECK((buttons & BUTTON_LEFT_THUMBSTICK) != 0);
+    CHECK((buttons & BUTTON_RIGHT_THUMBSTICK) != 0);
 }

@@ -264,6 +264,11 @@ void Instance::RemoveEventsForSession(XrSession session)
             const auto* change = reinterpret_cast<const XrEventDataReferenceSpaceChangePending*>(&event);
             return change->session == session;
         }
+        if (event.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED)
+        {
+            const auto* change = reinterpret_cast<const XrEventDataInteractionProfileChanged*>(&event);
+            return change->session == session;
+        }
         if (event.type != XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
         {
             return false;

@@ -65,6 +65,7 @@ public:
     bool GetButtonClick(Hand hand, const std::string& componentPath) const;
     bool IsInputDeviceActive(Hand hand) const;
     bool IsControllerTrackingActive(Hand hand) const;
+    bool IsControllerAimTrackingActive(Hand hand) const;
     bool IsHandTrackingActive(Hand hand) const;
     std::string GetCurrentInteractionProfile(Hand hand) const;
     std::vector<std::string> GetCurrentInteractionProfileCandidates(Hand hand) const;
@@ -139,6 +140,7 @@ private:
     XrVector2f leftThumbstick_ = {0.0f, 0.0f};
     XrVector2f rightThumbstick_ = {0.0f, 0.0f};
     uint32_t buttonState_ = 0;
+    uint32_t streamingTrackingFlags_ = 0;
     std::array<bool, 2> streamingControllerActive_ = {false, false};
     std::string streamingClientName_;
     std::string streamingControllerProfile_;

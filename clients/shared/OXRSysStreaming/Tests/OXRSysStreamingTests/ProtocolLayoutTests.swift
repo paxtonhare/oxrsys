@@ -149,6 +149,8 @@ final class ProtocolLayoutTests: XCTestCase {
         XCTAssertEqual(MemoryLayout<TrackingPacket>.offset(of: \.leftControllerAimAngularVelocity), 1132)
         XCTAssertEqual(MemoryLayout<TrackingPacket>.offset(of: \.rightControllerAimLinearVelocity), 1144)
         XCTAssertEqual(MemoryLayout<TrackingPacket>.offset(of: \.rightControllerAimAngularVelocity), 1156)
+        XCTAssertEqual(TrackingFlagsValues.leftControllerAimActive, 0x8000)
+        XCTAssertEqual(TrackingFlagsValues.rightControllerAimActive, 0x10000)
         XCTAssertEqual(TrackingFlagsValues.leftControllerActive, 0x0004)
         XCTAssertEqual(TrackingFlagsValues.rightControllerActive, 0x0008)
         XCTAssertEqual(TrackingFlagsValues.headLinearVelocityValid, 0x0010)

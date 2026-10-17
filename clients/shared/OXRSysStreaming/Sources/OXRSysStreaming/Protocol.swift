@@ -422,6 +422,8 @@ public struct TrackingFlagsValues {
     public static let leftControllerAngularVelocityValid: UInt32 = 0x0100
     public static let rightControllerLinearVelocityValid: UInt32 = 0x0200
     public static let rightControllerAngularVelocityValid: UInt32 = 0x0400
+    public static let leftControllerAimActive: UInt32 = 0x8000
+    public static let rightControllerAimActive: UInt32 = 0x10000
     public static let leftControllerAimLinearVelocityValid: UInt32 = 0x0800
     public static let leftControllerAimAngularVelocityValid: UInt32 = 0x1000
     public static let rightControllerAimLinearVelocityValid: UInt32 = 0x2000

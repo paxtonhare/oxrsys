@@ -36,6 +36,12 @@ void StoreQuat(float* dst, const glm::quat& quat)
     dst[3] = normalized.w;
 }
 
+bool HasRotation(const float* rotation)
+{
+    return rotation[0] != 0.0f || rotation[1] != 0.0f ||
+           rotation[2] != 0.0f || rotation[3] != 0.0f;
+}
+
 glm::quat CanonicalizeQuat(const glm::quat& quat, const glm::quat* reference)
 {
     glm::quat normalized = glm::normalize(quat);
@@ -260,6 +266,10 @@ void TrackingReceiver::InjectPacket(const uint8_t* data, size_t size)
         uint32_t flag;
         size_t end;
     } fields[] = {
+        {TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE,
+         offsetof(TrackingPacket, leftControllerAimRot) + sizeof(packet.leftControllerAimRot)},
+        {TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE,
+         offsetof(TrackingPacket, rightControllerAimRot) + sizeof(packet.rightControllerAimRot)},
         {TRACKING_FLAG_STAGE_BOUNDS_VALID, offsetof(TrackingPacket, stageBoundsHeight) + sizeof(float)},
         {TRACKING_FLAG_LEFT_CONTROLLER_LINEAR_VELOCITY_VALID,
          offsetof(TrackingPacket, leftControllerLinearVelocity) + sizeof(packet.leftControllerLinearVelocity)},
@@ -284,6 +294,16 @@ void TrackingReceiver::InjectPacket(const uint8_t* data, size_t size)
         {
             packet.trackingFlags &= ~field.flag;
         }
+    }
+    if (size < offsetof(TrackingPacket, leftControllerAimRot) + sizeof(packet.leftControllerAimRot))
+    {
+        memset(packet.leftControllerAimPos, 0, sizeof(packet.leftControllerAimPos));
+        memset(packet.leftControllerAimRot, 0, sizeof(packet.leftControllerAimRot));
+    }
+    if (size < offsetof(TrackingPacket, rightControllerAimRot) + sizeof(packet.rightControllerAimRot))
+    {
+        memset(packet.rightControllerAimPos, 0, sizeof(packet.rightControllerAimPos));
+        memset(packet.rightControllerAimRot, 0, sizeof(packet.rightControllerAimRot));
     }
     StorePacket(packet, SteadyClockNowNs());
 }
@@ -437,6 +457,48 @@ bool TrackingReceiver::GetPredictedPose(oxr::protocol::TrackingPacket& outPacket
                                      glm::radians(45.0f)));
     }
 
+    const bool previousLeftAimActive =
+        (previous.packet.trackingFlags &
+         (oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE | oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE)) != 0;
+    const bool currentLeftAimActive =
+        (current.packet.trackingFlags &
+         (oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE | oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE)) != 0;
+    if (previousLeftAimActive && currentLeftAimActive &&
+        HasRotation(previous.packet.leftControllerAimRot) &&
+        HasRotation(current.packet.leftControllerAimRot))
+    {
+        StoreVec3(outPacket.leftControllerAimPos,
+                  PredictPosition(LoadVec3(previous.packet.leftControllerAimPos),
+                                  LoadVec3(current.packet.leftControllerAimPos),
+                                  dtSeconds, positionHorizonSeconds, 6.0f));
+        StoreQuat(outPacket.leftControllerAimRot,
+                  PredictOrientation(LoadQuat(previous.packet.leftControllerAimRot),
+                                     LoadQuat(current.packet.leftControllerAimRot),
+                                     dtSeconds, controllerRotationHorizonSeconds,
+                                     glm::radians(45.0f)));
+    }
+
+    const bool previousRightAimActive =
+        (previous.packet.trackingFlags &
+         (oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE | oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE)) != 0;
+    const bool currentRightAimActive =
+        (current.packet.trackingFlags &
+         (oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE | oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE)) != 0;
+    if (previousRightAimActive && currentRightAimActive &&
+        HasRotation(previous.packet.rightControllerAimRot) &&
+        HasRotation(current.packet.rightControllerAimRot))
+    {
+        StoreVec3(outPacket.rightControllerAimPos,
+                  PredictPosition(LoadVec3(previous.packet.rightControllerAimPos),
+                                  LoadVec3(current.packet.rightControllerAimPos),
+                                  dtSeconds, positionHorizonSeconds, 6.0f));
+        StoreQuat(outPacket.rightControllerAimRot,
+                  PredictOrientation(LoadQuat(previous.packet.rightControllerAimRot),
+                                     LoadQuat(current.packet.rightControllerAimRot),
+                                     dtSeconds, controllerRotationHorizonSeconds,
+                                     glm::radians(45.0f)));
+    }
+
     return true;
 }
 
@@ -471,10 +533,14 @@ void TrackingReceiver::StorePacket(const oxr::protocol::TrackingPacket& packet, 
         const glm::quat* headReference = nullptr;
         const glm::quat* leftControllerReference = nullptr;
         const glm::quat* rightControllerReference = nullptr;
+        const glm::quat* leftControllerAimReference = nullptr;
+        const glm::quat* rightControllerAimReference = nullptr;
 
         glm::quat latestHeadQuat;
         glm::quat latestLeftControllerQuat;
         glm::quat latestRightControllerQuat;
+        glm::quat latestLeftControllerAimQuat;
+        glm::quat latestRightControllerAimQuat;
         if (hasData_.load())
         {
             latestHeadQuat = LoadQuat(latestPacket_.headOrientation);
@@ -483,6 +549,18 @@ void TrackingReceiver::StorePacket(const oxr::protocol::TrackingPacket& packet, 
             headReference = &latestHeadQuat;
             leftControllerReference = &latestLeftControllerQuat;
             rightControllerReference = &latestRightControllerQuat;
+            if ((latestPacket_.trackingFlags &
+                 (oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE | oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE)) != 0)
+            {
+                latestLeftControllerAimQuat = LoadQuat(latestPacket_.leftControllerAimRot);
+                leftControllerAimReference = &latestLeftControllerAimQuat;
+            }
+            if ((latestPacket_.trackingFlags &
+                 (oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE | oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE)) != 0)
+            {
+                latestRightControllerAimQuat = LoadQuat(latestPacket_.rightControllerAimRot);
+                rightControllerAimReference = &latestRightControllerAimQuat;
+            }
         }
 
         StoreQuat(normalizedPacket.headOrientation,
@@ -491,6 +569,18 @@ void TrackingReceiver::StorePacket(const oxr::protocol::TrackingPacket& packet, 
                   CanonicalizeQuat(LoadQuat(packet.leftControllerRot), leftControllerReference));
         StoreQuat(normalizedPacket.rightControllerRot,
                   CanonicalizeQuat(LoadQuat(packet.rightControllerRot), rightControllerReference));
+        if (HasRotation(packet.leftControllerAimRot))
+        {
+            StoreQuat(normalizedPacket.leftControllerAimRot,
+                      CanonicalizeQuat(LoadQuat(packet.leftControllerAimRot),
+                                       leftControllerAimReference));
+        }
+        if (HasRotation(packet.rightControllerAimRot))
+        {
+            StoreQuat(normalizedPacket.rightControllerAimRot,
+                      CanonicalizeQuat(LoadQuat(packet.rightControllerAimRot),
+                                       rightControllerAimReference));
+        }
 
         latestPacket_ = normalizedPacket;
         history_.push_back({normalizedPacket, receiveTimeNs});

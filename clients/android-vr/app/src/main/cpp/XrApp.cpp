@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "XrApp.h"
+#include "DisplayRefreshRate.h"
+#include "ControllerButtons.h"
 
 #include <android/hardware_buffer.h>
 #include <android/log.h>
@@ -1454,6 +1456,7 @@ bool XrApp::CreateSession()
 
 bool XrApp::InitializeDisplayRefreshRate(float preferredRefreshRateHz)
 {
+    requestedRefreshRateHz_ = 0.0f;
     if (!displayRefreshRateAvailable_ || session_ == XR_NULL_HANDLE)
     {
         return false;
@@ -1520,7 +1523,9 @@ bool XrApp::InitializeDisplayRefreshRate(float preferredRefreshRateHz)
 
     LOGI("Requested display refresh rate: %.1fHz", preferredRefreshRateHz);
 
-    RefreshCurrentDisplayRate("after refresh request", false);
+    requestedRefreshRateHz_ = preferredRefreshRateHz;
+    clientRefreshRateHz_ = display_refresh::SelectAdvertisedRefreshRate(
+        requestedRefreshRateHz_, true, 0.0f, clientRefreshRateHz_);
 
     return true;
 }
@@ -1554,7 +1559,8 @@ bool XrApp::RefreshCurrentDisplayRate(const char* context, bool logIfUnavailable
     }
 
     const uint32_t activeRefreshRateHz =
-        static_cast<uint32_t>(std::max(1.0f, std::round(currentRate)));
+        display_refresh::SelectAdvertisedRefreshRate(
+            requestedRefreshRateHz_, requestedRefreshRateHz_ > 0.0f, currentRate, clientRefreshRateHz_);
     if (activeRefreshRateHz != clientRefreshRateHz_ || logIfUnavailable)
     {
         LOGI("Active display refresh before %s: %.1fHz (reported %uHz, previous %uHz)",
@@ -1736,8 +1742,14 @@ bool XrApp::SetupActions()
     strncpy(actionInfo.localizedActionName, "Thumbstick", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
     XR_CHECK(xrCreateAction(actionSet_, &actionInfo, &thumbstickAction_), "xrCreateAction(thumbstick)");
 
-    // A/X button (boolean, both hands)
+    // Thumbstick click action (boolean, both hands)
     actionInfo.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    strncpy(actionInfo.actionName, "thumbstick_click", XR_MAX_ACTION_NAME_SIZE);
+    strncpy(actionInfo.localizedActionName, "Thumbstick Click", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    XR_CHECK(xrCreateAction(actionSet_, &actionInfo, &thumbstickClickAction_),
+             "xrCreateAction(thumbstick_click)");
+
+    // A/X button (boolean, both hands)
     strncpy(actionInfo.actionName, "a_button", XR_MAX_ACTION_NAME_SIZE);
     strncpy(actionInfo.localizedActionName, "A/X Button", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
     XR_CHECK(xrCreateAction(actionSet_, &actionInfo, &aButtonAction_), "xrCreateAction(a_button)");
@@ -1754,7 +1766,7 @@ bool XrApp::SetupActions()
     strncpy(actionInfo.localizedActionName, "Menu", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
     XR_CHECK(xrCreateAction(actionSet_, &actionInfo, &menuAction_), "xrCreateAction(menu)");
 
-    XrPath bindingPaths[15];
+    XrPath bindingPaths[17];
     xrStringToPath(instance_, "/user/hand/left/input/grip/pose", &bindingPaths[0]);
     xrStringToPath(instance_, "/user/hand/right/input/grip/pose", &bindingPaths[1]);
     xrStringToPath(instance_, "/user/hand/left/input/aim/pose", &bindingPaths[2]);
@@ -1770,6 +1782,8 @@ bool XrApp::SetupActions()
     xrStringToPath(instance_, "/user/hand/left/input/y/click", &bindingPaths[12]);
     xrStringToPath(instance_, "/user/hand/right/input/b/click", &bindingPaths[13]);
     xrStringToPath(instance_, "/user/hand/left/input/menu/click", &bindingPaths[14]);
+    xrStringToPath(instance_, "/user/hand/left/input/thumbstick/click", &bindingPaths[15]);
+    xrStringToPath(instance_, "/user/hand/right/input/thumbstick/click", &bindingPaths[16]);
 
     XrActionSuggestedBinding bindingsWithAim[] = {
         {gripPoseAction_, bindingPaths[0]},
@@ -1787,6 +1801,8 @@ bool XrApp::SetupActions()
         {bButtonAction_, bindingPaths[12]},
         {bButtonAction_, bindingPaths[13]},
         {menuAction_, bindingPaths[14]},
+        {thumbstickClickAction_, bindingPaths[15]},
+        {thumbstickClickAction_, bindingPaths[16]},
     };
     XrActionSuggestedBinding bindingsWithoutAim[] = {
         {gripPoseAction_, bindingPaths[0]},
@@ -1802,6 +1818,8 @@ bool XrApp::SetupActions()
         {bButtonAction_, bindingPaths[12]},
         {bButtonAction_, bindingPaths[13]},
         {menuAction_, bindingPaths[14]},
+        {thumbstickClickAction_, bindingPaths[15]},
+        {thumbstickClickAction_, bindingPaths[16]},
     };
 
     const char* controllerProfiles[] = {
@@ -5164,6 +5182,11 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
                                            : protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ANGULAR_VELOCITY_VALID);
                 }
             }
+            if (aimActive)
+            {
+                packet.trackingFlags |= hand == 0 ? protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE
+                                                  : protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE;
+            }
             if (controllerActive || aimActive)
             {
                 // Send the aim (pointer) pose separately from grip so the server can report
@@ -5232,28 +5255,15 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
                       &packet.rightThumbstick[0], &packet.rightThumbstick[1]);
 
     // Buttons
-    uint32_t buttons = 0;
-    if (readBooleanAction(aButtonAction_, handPaths_[0]))
-    {
-        buttons |= protocol::BUTTON_X;
-    }
-    if (readBooleanAction(aButtonAction_, handPaths_[1]))
-    {
-        buttons |= protocol::BUTTON_A;
-    }
-    if (readBooleanAction(bButtonAction_, handPaths_[0]))
-    {
-        buttons |= protocol::BUTTON_Y;
-    }
-    if (readBooleanAction(bButtonAction_, handPaths_[1]))
-    {
-        buttons |= protocol::BUTTON_B;
-    }
-    if (readBooleanAction(menuAction_, handPaths_[0]))
-    {
-        buttons |= protocol::BUTTON_MENU;
-    }
-    packet.buttonState = buttons;
+    protocol::ControllerButtonInputs buttons = {};
+    buttons.x = readBooleanAction(aButtonAction_, handPaths_[0]);
+    buttons.a = readBooleanAction(aButtonAction_, handPaths_[1]);
+    buttons.y = readBooleanAction(bButtonAction_, handPaths_[0]);
+    buttons.b = readBooleanAction(bButtonAction_, handPaths_[1]);
+    buttons.menu = readBooleanAction(menuAction_, handPaths_[0]);
+    buttons.leftThumbstick = readBooleanAction(thumbstickClickAction_, handPaths_[0]);
+    buttons.rightThumbstick = readBooleanAction(thumbstickClickAction_, handPaths_[1]);
+    packet.buttonState = protocol::EncodeControllerButtonInputs(buttons);
 
     // Debug: log position periodically to verify 6DOF tracking
     static uint32_t trackingLogCounter = 0;

@@ -220,6 +220,65 @@ kernel void foveation_kernel(texture2d<float, access::sample> leftTexture [[text
 }
 )METAL";
 
+constexpr const char* kP010ConversionMetalSource = R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+
+static float p010_storage_value(float tenBitCode)
+{
+    // P010 stores each 10-bit code in the most-significant bits of a 16-bit
+    // component. R16/RG16Unorm writes the normalized 16-bit storage value.
+    return (round(tenBitCode) * 64.0) / 65535.0;
+}
+
+static float3 bt709_video_range(float3 rgb)
+{
+    float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+    float y = clamp(64.0 + 876.0 * luma, 64.0, 940.0);
+    float cb = clamp(512.0 + 896.0 * ((rgb.b - luma) / 1.8556), 64.0, 960.0);
+    float cr = clamp(512.0 + 896.0 * ((rgb.r - luma) / 1.5748), 64.0, 960.0);
+    return float3(y, cb, cr);
+}
+
+kernel void bgra_to_p010(
+    texture2d<float, access::read> rgbTexture [[texture(0)]],
+    texture2d<float, access::write> lumaTexture [[texture(1)]],
+    texture2d<float, access::write> chromaTexture [[texture(2)]],
+    uint2 chromaPosition [[thread_position_in_grid]])
+{
+    if (chromaPosition.x >= chromaTexture.get_width() ||
+        chromaPosition.y >= chromaTexture.get_height())
+    {
+        return;
+    }
+
+    const uint2 basePosition = chromaPosition * 2;
+    float cbSum = 0.0;
+    float crSum = 0.0;
+
+    for (uint y = 0; y < 2; ++y)
+    {
+        for (uint x = 0; x < 2; ++x)
+        {
+            const uint2 position = basePosition + uint2(x, y);
+            const float3 yCbCr = bt709_video_range(rgbTexture.read(position).rgb);
+            lumaTexture.write(
+                float4(p010_storage_value(yCbCr.x), 0.0, 0.0, 1.0),
+                position);
+            cbSum += yCbCr.y;
+            crSum += yCbCr.z;
+        }
+    }
+
+    chromaTexture.write(
+        float4(p010_storage_value(cbSum * 0.25),
+               p010_storage_value(crSum * 0.25),
+               0.0,
+               1.0),
+        chromaPosition);
+}
+)METAL";
+
 void FinalizeEncodeFrame(EncodeFrameContext* context, bool frameDropped)
 {
     if (context == nullptr)
@@ -628,6 +687,40 @@ id<MTLComputePipelineState> CreateFoveationPipeline(id<MTLDevice> device)
     return pipeline;
 }
 
+id<MTLComputePipelineState> CreateP010ConversionPipeline(id<MTLDevice> device)
+{
+    NSError* error = nil;
+    NSString* source = [NSString stringWithUTF8String:kP010ConversionMetalSource];
+    id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
+    if (library == nil)
+    {
+        spdlog::error("VideoEncoder: Failed to compile P010 conversion shader: {}",
+                      error != nil ? error.localizedDescription.UTF8String : "unknown error");
+        return nil;
+    }
+
+    id<MTLFunction> kernelFunction = [library newFunctionWithName:@"bgra_to_p010"];
+    if (kernelFunction == nil)
+    {
+        spdlog::error("VideoEncoder: Failed to load P010 conversion shader entry point");
+        [library release];
+        return nil;
+    }
+
+    error = nil;
+    id<MTLComputePipelineState> pipeline =
+        [device newComputePipelineStateWithFunction:kernelFunction error:&error];
+    if (pipeline == nil)
+    {
+        spdlog::error("VideoEncoder: Failed to create P010 conversion pipeline: {}",
+                      error != nil ? error.localizedDescription.UTF8String : "unknown error");
+    }
+
+    [kernelFunction release];
+    [library release];
+    return pipeline;
+}
+
 id<MTLSamplerState> CreateLinearClampSampler(id<MTLDevice> device)
 {
     MTLSamplerDescriptor* descriptor = [[MTLSamplerDescriptor alloc] init];
@@ -835,6 +928,16 @@ bool VideoEncoder::Initialize(uint32_t width, uint32_t height, uint32_t fps,
 
     videoToolbox_.commandQueue = (void*)[device newCommandQueue];
     videoToolbox_.scaler = (void*)[[MPSImageBilinearScale alloc] initWithDevice:device];
+    if (tenBit_ && codec_ == oxr::protocol::VideoCodec::H265)
+    {
+        videoToolbox_.p010ConversionPipeline = (void*)CreateP010ConversionPipeline(device);
+        if (videoToolbox_.p010ConversionPipeline == nullptr)
+        {
+            Shutdown();
+            return false;
+        }
+    }
+
     videoToolbox_.copyPipeline = (void*)CreateVideoCopyPipeline(device);
     videoToolbox_.copySampler = (void*)CreateLinearClampSampler(device);
     if (videoToolbox_.commandQueue == nullptr || videoToolbox_.scaler == nullptr ||
@@ -944,6 +1047,44 @@ bool VideoEncoder::Initialize(uint32_t width, uint32_t height, uint32_t fps,
 
         slots_[i].pixelBuffer = pixelBuffer;
         slots_[i].metalTexture = cvMetalTexture;
+        if (videoToolbox_.p010ConversionPipeline != nullptr)
+        {
+            CVPixelBufferRef p010 = nullptr;
+            NSDictionary* attrs = @{
+                (NSString*)kCVPixelBufferIOSurfacePropertiesKey: @{},
+                (NSString*)kCVPixelBufferMetalCompatibilityKey: @YES,
+            };
+            CVReturn result = CVPixelBufferCreate(kCFAllocatorDefault, width_, height_,
+                kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                (__bridge CFDictionaryRef)attrs, &p010);
+            slots_[i].p010PixelBuffer = p010;
+            if (result != kCVReturnSuccess || p010 == nullptr)
+            {
+                Shutdown();
+                return false;
+            }
+            CVBufferSetAttachment(p010, kCVImageBufferColorPrimariesKey,
+                kCVImageBufferColorPrimaries_ITU_R_709_2, kCVAttachmentMode_ShouldPropagate);
+            CVBufferSetAttachment(p010, kCVImageBufferTransferFunctionKey,
+                kCVImageBufferTransferFunction_ITU_R_709_2, kCVAttachmentMode_ShouldPropagate);
+            CVBufferSetAttachment(p010, kCVImageBufferYCbCrMatrixKey,
+                kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVAttachmentMode_ShouldPropagate);
+            for (size_t plane = 0; plane < 2; ++plane)
+            {
+                CVMetalTextureRef texture = nullptr;
+                result = CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault,
+                    (CVMetalTextureCacheRef)videoToolbox_.textureCache, p010, nullptr,
+                    plane == 0 ? MTLPixelFormatR16Unorm : MTLPixelFormatRG16Unorm,
+                    width_ / (plane + 1), height_ / (plane + 1), plane, &texture);
+                slots_[i].p010Textures[plane] = texture;
+                if (result != kCVReturnSuccess || texture == nullptr)
+                {
+                    Shutdown();
+                    return false;
+                }
+            }
+        }
+
         slots_[i].tmpLeftTexture = (void*)[device newTextureWithDescriptor:tmpDesc];
         slots_[i].tmpRightTexture = (void*)[device newTextureWithDescriptor:tmpDesc];
         if (foveatedScratchDesc != nil)
@@ -1544,6 +1685,12 @@ bool VideoEncoder::Shutdown(std::chrono::nanoseconds timeout)
     }
 
     DestroySlots();
+    if (videoToolbox_.p010ConversionPipeline != nullptr)
+    {
+        [(id<MTLComputePipelineState>)videoToolbox_.p010ConversionPipeline release];
+        videoToolbox_.p010ConversionPipeline = nullptr;
+    }
+
 
     if (videoToolbox_.scaler != nullptr)
     {
@@ -2060,6 +2207,38 @@ bool VideoEncoder::EncodeInternal(FrameSource frameSource, bool stereo,
         [blit endEncoding];
     }
 
+    CVPixelBufferRef p010PixelBuffer = (CVPixelBufferRef)slot.p010PixelBuffer;
+    if (p010PixelBuffer != nullptr)
+    {
+        id<MTLTexture> lumaTexture = CVMetalTextureGetTexture((CVMetalTextureRef)slot.p010Textures[0]);
+        id<MTLTexture> chromaTexture = CVMetalTextureGetTexture((CVMetalTextureRef)slot.p010Textures[1]);
+        id<MTLComputeCommandEncoder> p010Encoder = [cmdBuf computeCommandEncoder];
+        if (p010Encoder == nil)
+        {
+            return dropAcquiredSlot("failed to create P010 conversion encoder");
+        }
+        id<MTLComputePipelineState> p010Pipeline =
+            (id<MTLComputePipelineState>)videoToolbox_.p010ConversionPipeline;
+        [p010Encoder setComputePipelineState:p010Pipeline];
+        [p010Encoder setTexture:dstTexture atIndex:0];
+        [p010Encoder setTexture:lumaTexture atIndex:1];
+        [p010Encoder setTexture:chromaTexture atIndex:2];
+
+        const NSUInteger p010ThreadsX = std::max<NSUInteger>(
+            1, std::min<NSUInteger>(p010Pipeline.threadExecutionWidth, 16));
+        const NSUInteger p010ThreadsY = std::max<NSUInteger>(
+            1, std::min<NSUInteger>(p010Pipeline.maxTotalThreadsPerThreadgroup / p010ThreadsX, 16));
+        const MTLSize p010ThreadsPerGroup = MTLSizeMake(p010ThreadsX, p010ThreadsY, 1);
+        const MTLSize p010Threadgroups = MTLSizeMake(
+            (chromaTexture.width + p010ThreadsX - 1) / p010ThreadsX,
+            (chromaTexture.height + p010ThreadsY - 1) / p010ThreadsY,
+            1);
+        [p010Encoder dispatchThreadgroups:p010Threadgroups
+                    threadsPerThreadgroup:p010ThreadsPerGroup];
+        [p010Encoder endEncoding];
+
+    }
+
     auto* context = new EncodeFrameContext();
     context->nalCallback = std::move(callback);
     context->frameCallback = std::move(frameCallback);
@@ -2174,10 +2353,11 @@ bool VideoEncoder::EncodeInternal(FrameSource frameSource, bool stereo,
             // slot (EncoderSessionColor.h); VideoToolbox retains it for as
             // long as it needs it, so the local reference is dropped below.
             CVPixelBufferRef videoRangeBuffer =
-                (CVPixelBufferRef)this->ConvertToVideoRange(pixelBuffer);
+                p010PixelBuffer == nullptr ? (CVPixelBufferRef)this->ConvertToVideoRange(pixelBuffer) : nullptr;
             status = VTCompressionSessionEncodeFrame(
                 compressionSession,
-                videoRangeBuffer != nullptr ? videoRangeBuffer : pixelBuffer,
+                p010PixelBuffer != nullptr ? p010PixelBuffer :
+                    (videoRangeBuffer != nullptr ? videoRangeBuffer : pixelBuffer),
                 presentationTime,
                 kCMTimeInvalid,
                 frameProps,
@@ -2275,6 +2455,16 @@ void VideoEncoder::DestroySlots()
         {
             [(id<MTLTexture>)slot.rightCropTexture release];
             slot.rightCropTexture = nullptr;
+        }
+        for (void*& texture : slot.p010Textures)
+        {
+            if (texture != nullptr) CFRelease(texture);
+            texture = nullptr;
+        }
+        if (slot.p010PixelBuffer != nullptr)
+        {
+            CVPixelBufferRelease((CVPixelBufferRef)slot.p010PixelBuffer);
+            slot.p010PixelBuffer = nullptr;
         }
         if (slot.metalTexture != nullptr)
         {

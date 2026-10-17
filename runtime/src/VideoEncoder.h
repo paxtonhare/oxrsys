@@ -153,6 +153,8 @@ public:
 private:
     struct BufferSlot
     {
+        void* p010PixelBuffer = nullptr;
+        void* p010Textures[2] = {nullptr, nullptr};
         void* pixelBuffer = nullptr;      // CVPixelBufferRef
         void* metalTexture = nullptr;     // CVMetalTextureRef
         void* tmpLeftTexture = nullptr;   // id<MTLTexture>
@@ -209,6 +211,7 @@ private:
         void* scaler = nullptr;           // MPSImageBilinearScale*
         void* copyPipeline = nullptr;      // id<MTLComputePipelineState>
         void* copySampler = nullptr;       // id<MTLSamplerState>
+        void* p010ConversionPipeline = nullptr;
         void* foveationPipeline = nullptr; // id<MTLComputePipelineState>
         void* foveationSampler = nullptr;  // id<MTLSamplerState>
         // Software sessions only: BGRA -> video-range 4:2:0 before encode.

@@ -235,6 +235,7 @@ XrResult Session::BeginSession(const XrSessionBeginInfo* beginInfo)
         std::scoped_lock lock(frameStateMutex_);
         frameBegun_ = false;
         waitedFrameCount_ = 0;
+        framePacer_.Reset();
     }
 
     running_ = true;
@@ -273,6 +274,7 @@ XrResult Session::EndSession()
         std::scoped_lock lock(frameStateMutex_);
         frameBegun_ = false;
         waitedFrameCount_ = 0;
+        framePacer_.Reset();
     }
 
     TransitionState(XR_SESSION_STATE_IDLE);
@@ -306,6 +308,7 @@ XrResult Session::Shutdown()
         std::scoped_lock lock(frameStateMutex_);
         frameBegun_ = false;
         waitedFrameCount_ = 0;
+        framePacer_.Reset();
     }
 
     if (inputManager_)
@@ -436,12 +439,12 @@ XrResult Session::WaitFrame(const XrFrameWaitInfo* frameWaitInfo, XrFrameState* 
 
     // Throttle to the negotiated headset refresh rate when available.
     auto now = std::chrono::steady_clock::now();
-    auto elapsed = now - lastFrameTime_;
     auto targetFrameTime = std::chrono::nanoseconds(1000000000ll / targetRefreshHz);
 
-    if (elapsed < targetFrameTime)
+    const auto deadline = framePacer_.NextDeadline(now, targetFrameTime);
+    if (deadline > now)
     {
-        std::this_thread::sleep_for(targetFrameTime - elapsed);
+        std::this_thread::sleep_until(deadline);
         now = std::chrono::steady_clock::now();
     }
 

@@ -171,6 +171,8 @@ set(OXRSYS_LOGCAT_TEST_ENV
 add_executable(oxrsys_runtime_tests
     tests/TestBoundedDrain.cpp
     tests/TestClientLiveness.cpp
+    tests/TestDisplayRefreshRate.cpp
+    tests/TestFramePacer.cpp
     tests/TestConfig.cpp
     tests/TestEncoderHelperIpc.cpp
     tests/TestEncoderPathPolicy.cpp

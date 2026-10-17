@@ -416,3 +416,13 @@ TEST_CASE("VideoEncoder falls back in-process when the encoder helper dies mid-s
     [queue release];
     [device release];
 }
+
+TEST_CASE("Main10 GPU conversion supports foveated sRGB composition", "[encoder][metal][p010]")
+{
+    if (!VideoEncoder::QueryBackendCapabilities().supportsH265)
+    {
+        SKIP("HEVC is unavailable on this host");
+    }
+    EncodeOneFrame(oxr::protocol::VideoCodec::H265, MTLPixelFormatRGBA8Unorm_sRGB,
+                   true, true, true);
+}

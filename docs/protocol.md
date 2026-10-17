@@ -117,9 +117,10 @@ codec negotiation or encoded bandwidth.
 
 The runtime announces the configured preferred headset refresh rate. Current Home-supported values
 are `60`, `72`, `80`, `90`, and `120` Hz. Quest clients request the announced value through
-`XR_FB_display_refresh_rate` when available, read the active headset rate again immediately before
-`ClientConnect`, and report that value in `ClientConnect.refreshRateHz`; the runtime uses the
-reported value for encode cadence and pose prediction.
+`XR_FB_display_refresh_rate` when available and advertise the accepted target in
+`ClientConnect.refreshRateHz`. An asynchronous transition may still report the old active rate;
+that query must not override an accepted target. If no request was accepted, the client reports
+the active rate. The runtime uses the reported value for absolute frame cadence and pose prediction.
 
 Foveated encoding uses an ALVR-style axis-aligned distortion transform before video encode on
 supported server paths. The announced presets currently map to:
@@ -257,3 +258,12 @@ The expected lifecycle is:
 ## Compatibility
 
 The protocol is still internal and may evolve with the runtime and client implementations. When updating the wire format, keep `common/Protocol.h`, the runtime, the Android client, and this document aligned in the same change.
+
+Controller aim activity uses flags `0x8000` (left) and `0x10000` (right), independently of grip
+activity. These do not reuse the head-velocity bits `0x0010` and `0x0020`. The existing trailing
+aim fields and Swift layout are unchanged. Legacy packets retain grip fallback for an absent aim;
+short packets cannot assert activity for missing aim fields. Aim motion is predicted separately.
+
+For negotiated in-process HEVC Main10, Metal converts the composed RGB surface to BT.709
+video-range P010 before encode (Y 64–940, Cb/Cr 64–960, stored in the high ten bits).
+H.264, eight-bit HEVC, and the helper's existing IOSurface input contract remain unchanged.

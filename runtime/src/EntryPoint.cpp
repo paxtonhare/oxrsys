@@ -2199,9 +2199,21 @@ static void AccumulateBindingState(const InputManager& inputManager, const Sugge
     bool deviceActive = inputManager.IsInputDeviceActive(hand);
     if (inputManager.IsStreaming())
     {
-        deviceActive = binding.profilePathString == "/interaction_profiles/ext/hand_interaction_ext"
-                           ? inputManager.IsHandTrackingActive(hand)
-                           : inputManager.IsControllerTrackingActive(hand);
+        if (binding.profilePathString == "/interaction_profiles/ext/hand_interaction_ext")
+        {
+            deviceActive = inputManager.IsHandTrackingActive(hand);
+        }
+        else if (binding.componentPath == "aim/pose")
+        {
+            // Older packets use grip as the aim fallback; newer packets may
+            // carry a valid aim pose while grip tracking is temporarily invalid.
+            deviceActive = inputManager.IsControllerTrackingActive(hand) ||
+                           inputManager.IsControllerAimTrackingActive(hand);
+        }
+        else
+        {
+            deviceActive = inputManager.IsControllerTrackingActive(hand);
+        }
     }
     if (!deviceActive)
     {

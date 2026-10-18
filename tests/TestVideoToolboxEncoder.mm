@@ -234,8 +234,9 @@ TEST_CASE("VideoToolbox shutdown drains submitted frame-source ownership",
 
     GraphicsContext graphics = GraphicsContext::Metal((__bridge void*)device,
                                                        (__bridge void*)queue);
-    VideoEncoder encoder;
-    REQUIRE(encoder.Initialize(128, 64, 60, 8, graphics,
+    auto encoder = std::make_shared<VideoEncoder>();
+    std::weak_ptr<VideoEncoder> weakEncoder = encoder;
+    REQUIRE(encoder->Initialize(128, 64, 60, 8, graphics,
                                oxr::protocol::VideoCodec::H264));
 
     auto lifetime = std::make_shared<int>(42);
@@ -247,10 +248,17 @@ TEST_CASE("VideoToolbox shutdown drains submitted frame-source ownership",
     frame.right.lifetime = lifetime;
     lifetime.reset();
 
-    REQUIRE(encoder.EncodeStereo(std::move(frame), 2'000'000,
-                                 [](const uint8_t*, size_t, bool, int64_t) {}));
-    REQUIRE(encoder.Shutdown(std::chrono::seconds(5)));
+    REQUIRE(encoder->EncodeStereo(std::move(frame), 2'000'000,
+                                 [](const uint8_t*, size_t, bool, int64_t) {},
+                                 [weakEncoder](const VideoEncoder::FrameMetrics&) {
+                                     if (auto live = weakEncoder.lock())
+                                         (void)live->GetEncodedFrameCount();
+                                 }));
+    REQUIRE(encoder->Shutdown(std::chrono::seconds(5)));
     CHECK(weakLifetime.expired());
+
+    encoder.reset();
+    CHECK(weakEncoder.expired());
 
     [queue release];
     [device release];
@@ -425,4 +433,21 @@ TEST_CASE("Main10 GPU conversion supports foveated sRGB composition", "[encoder]
     }
     EncodeOneFrame(oxr::protocol::VideoCodec::H265, MTLPixelFormatRGBA8Unorm_sRGB,
                    true, true, true);
+}
+
+TEST_CASE("Main10 initialization rejects odd chroma dimensions", "[encoder][p010]")
+{
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    REQUIRE(device != nil);
+    id<MTLCommandQueue> queue = [device newCommandQueue];
+    GraphicsContext graphics = GraphicsContext::Metal((__bridge void*)device,
+                                                      (__bridge void*)queue);
+    VideoEncoder encoder;
+    encoder.SetTenBitEncoding(true);
+    CHECK_FALSE(encoder.Initialize(127, 64, 72, 10, graphics, oxr::protocol::VideoCodec::H265));
+    CHECK_FALSE(encoder.Initialize(128, 63, 72, 10, graphics, oxr::protocol::VideoCodec::H265));
+    REQUIRE(encoder.Initialize(128, 64, 72, 10, graphics, oxr::protocol::VideoCodec::H265));
+    CHECK(encoder.Shutdown());
+    [queue release];
+    [device release];
 }

@@ -142,6 +142,7 @@ private:
     uint32_t buttonState_ = 0;
     uint32_t streamingTrackingFlags_ = 0;
     std::array<bool, 2> streamingControllerActive_ = {false, false};
+    std::array<bool, 2> streamingControllerKnown_ = {false, false};
     std::string streamingClientName_;
     std::string streamingControllerProfile_;
 

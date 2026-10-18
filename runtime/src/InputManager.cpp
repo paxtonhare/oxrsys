@@ -202,6 +202,7 @@ void InputManager::SetTrackingReceiver(TrackingReceiver* receiver)
     if (receiver == nullptr)
     {
         streamingControllerActive_.fill(false);
+        streamingControllerKnown_.fill(false);
         for (auto& handState : streamingHands_)
         {
             handState.active = false;
@@ -213,6 +214,10 @@ void InputManager::SetTrackingReceiver(TrackingReceiver* receiver)
 
 void InputManager::SetStreamingClientName(const std::string& clientName)
 {
+    if (streamingClientName_ != clientName)
+    {
+        streamingControllerKnown_.fill(false);
+    }
     streamingClientName_ = clientName;
     streamingControllerProfile_ = DetectStreamingControllerProfile(clientName);
     spdlog::info("InputManager: streaming client='{}' controller_profile='{}'",
@@ -261,6 +266,10 @@ void InputManager::UpdateFromStreaming()
     const bool previousRightControllerActive = streamingControllerActive_[HandIndex(Hand::Right)];
     streamingControllerActive_[HandIndex(Hand::Left)] = leftControllerActive;
     streamingControllerActive_[HandIndex(Hand::Right)] = rightControllerActive;
+    streamingControllerKnown_[0] = streamingControllerKnown_[0] || leftControllerActive ||
+        (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_AIM_ACTIVE);
+    streamingControllerKnown_[1] = streamingControllerKnown_[1] || rightControllerActive ||
+        (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_AIM_ACTIVE);
     if (leftControllerActive != previousLeftControllerActive)
     {
         spdlog::info("InputManager: left controller {} flags=0x{:x}",
@@ -698,7 +707,8 @@ std::vector<std::string> InputManager::GetCurrentInteractionProfileCandidates(Ha
         }
     }
 
-    if (IsControllerTrackingActive(hand) || IsControllerAimTrackingActive(hand))
+    if (IsControllerTrackingActive(hand) || IsControllerAimTrackingActive(hand) ||
+        (IsStreaming() && streamingControllerKnown_[HandIndex(hand)]))
     {
         return streamingControllerCandidates();
     }

@@ -716,7 +716,7 @@ TEST_CASE("InputManager — streaming hands and controllers stay profile separat
 
     CHECK_FALSE(im.IsControllerTrackingActive(InputManager::Hand::Left));
     CHECK(im.IsHandTrackingActive(InputManager::Hand::Left));
-    CHECK(im.GetCurrentInteractionProfile(InputManager::Hand::Left) == HandProfile);
+    CHECK(im.GetCurrentInteractionProfile(InputManager::Hand::Left) == "/interaction_profiles/meta/touch_plus_controller");
 
     XrPosef lastControllerPose = im.GetControllerPose(InputManager::Hand::Left);
     CHECK_THAT(lastControllerPose.position.x, WithinAbs(-0.40f, 0.001f));
@@ -728,6 +728,15 @@ TEST_CASE("InputManager — streaming hands and controllers stay profile separat
     CHECK_THAT(handPose.position.x, WithinAbs(0.20f, 0.001f));
     CHECK_THAT(handPose.position.y, WithinAbs(1.35f, 0.001f));
     CHECK_THAT(handPose.position.z, WithinAbs(-0.25f, 0.001f));
+    // Pairing memory never activates controller inputs, and resets for a new client.
+    CHECK_FALSE(im.IsControllerTrackingActive(InputManager::Hand::Left));
+    CHECK(im.GetCurrentInteractionProfile(InputManager::Hand::Right) != HandProfile);
+    im.SetStreamingClientName("Another headset");
+    CHECK(im.GetCurrentInteractionProfile(InputManager::Hand::Left) == HandProfile);
+    im.SetTrackingReceiver(nullptr);
+    CHECK(im.GetCurrentInteractionProfile(InputManager::Hand::Left) ==
+          "/interaction_profiles/khr/simple_controller");
+
 }
 
 TEST_CASE("InputManager — select follows trigger and squeeze follows grab", "[input]")

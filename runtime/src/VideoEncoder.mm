@@ -904,6 +904,13 @@ bool VideoEncoder::Initialize(uint32_t width, uint32_t height, uint32_t fps,
         return false;
     }
 
+    if (tenBit_ && codec == oxr::protocol::VideoCodec::H265 &&
+        ((width & 1u) != 0 || (height & 1u) != 0))
+    {
+        spdlog::error("VideoEncoder: Main10 requires even dimensions");
+        return false;
+    }
+
     width_ = width;
     height_ = height;
     eyeWidth_ = width / 2;

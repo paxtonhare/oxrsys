@@ -9,6 +9,31 @@ import simd
 import OXRSysStreaming
 
 final class SimulatorInputManager {
+    private let automationLock = NSLock()
+    private var automation: AutomationInput?
+    private var automationDeadline: TimeInterval = 0
+
+    func setAutomation(_ input: AutomationInput) throws {
+        try input.validate()
+        automationLock.lock()
+        defer { automationLock.unlock() }
+        automation = input
+        automationDeadline = ProcessInfo.processInfo.systemUptime + 2
+    }
+
+    func automationSnapshot(now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> (input: AutomationInput, released: Bool)? {
+        automationLock.lock()
+        defer { automationLock.unlock() }
+        guard var input = automation else { return nil }
+        let released = now > automationDeadline
+        if released {
+            input.buttons = 0
+            input.left.trigger = 0; input.left.grip = 0; input.left.thumbstick = [0, 0]
+            input.right.trigger = 0; input.right.grip = 0; input.right.thumbstick = [0, 0]
+        }
+        return (input, released)
+    }
+
     // Head state
     private var yaw: Float = 0
     private var pitch: Float = 0
@@ -237,6 +262,7 @@ final class SimulatorInputManager {
         packet.ipd = 0.064
         packet.eyeFov = currentEyeFov()
 
+        automationSnapshot()?.input.apply(to: &packet)
         return packet
     }
 

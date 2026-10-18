@@ -173,6 +173,25 @@ final class SimulatorModel {
         }
     }
 
+    func connectLocalAutomation() {
+        guard state == .disconnected else { return }
+        state = .discovering
+        statusText = "Searching for localhost runtime..."
+        discovery.requestServer(at: "127.0.0.1", onServerFound: { [weak self] server in
+            Task { @MainActor [weak self] in
+                guard let self, self.state == .discovering else { return }
+                self.discoveredServer = server
+                self.updateSimulatorProjection()
+                self.connect()
+            }
+        }, onError: { [weak self] message in
+            Task { @MainActor [weak self] in
+                self?.disconnect()
+                self?.statusText = message
+            }
+        })
+    }
+
     func connect() {
         guard let server = discoveredServer else { return }
         state = .connecting

@@ -11,6 +11,7 @@ let package = Package(
     ],
     products: [
         .library(name: "OXRSysSimulator", targets: ["OXRSysSimulator"]),
+        .executable(name: "oxrsys-sim-control", targets: ["SimulatorControl"]),
     ],
     dependencies: [
         .package(path: "../OXRSysStreaming"),
@@ -21,5 +22,7 @@ let package = Package(
             dependencies: ["OXRSysStreaming"],
             path: "Sources/OXRSysSimulator"
         ),
+        .executableTarget(name: "SimulatorControl", dependencies: ["OXRSysSimulator"]),
+        .testTarget(name: "OXRSysSimulatorTests", dependencies: ["OXRSysSimulator"]),
     ]
 )

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "XrApp.h"
+#include "HeadsetCapabilities.h"
 #include "DisplayRefreshRate.h"
 #include "ControllerButtons.h"
 
@@ -26,6 +27,7 @@
 #include <GLES3/gl3.h>
 #include <GLES2/gl2ext.h>
 #include <openxr/openxr_platform.h>
+#include <AudioTransport.h>
 #include <Foveation.h>
 
 #define LOG_TAG "OXRSys-Android"
@@ -2135,7 +2137,8 @@ void XrApp::ShutdownFoveation()
 
 void XrApp::StartNetworking()
 {
-    if (networkReceiver_ || trackingSender_ || videoDecoder_)
+    if (networkReceiver_ || trackingSender_ || videoDecoder_ ||
+        headsetAudioPlayer_ || audioTcpSocket_ >= 0)
     {
         ResetConnection("restarting networking");
     }
@@ -2156,6 +2159,10 @@ void XrApp::StartNetworking()
     decoderEncodedWidth_ = 0;
     decoderEncodedHeight_ = 0;
     activeVideoCodec_.store(protocol::VideoCodec::H265);
+    serverAudioPort_ = 0;
+    serverAudioSampleRateHz_ = 48'000;
+    serverHeadsetAudioEnabled_ = false;
+    headsetAudioOutputReady_.store(false);
     presentedVideoFrame_ = {};
     hasObservedProtocolAlphaFrame_ = false;
     loggedTransparentClearFallback_ = false;
@@ -2200,6 +2207,7 @@ void XrApp::StopNetworking()
 void XrApp::ResetConnection(const char* reason)
 {
     LOGI("Resetting connection: %s", reason != nullptr ? reason : "unspecified");
+    StopHeadsetAudio();
     StopControlReceiver();
     StopStreamConfigWorker();
     CloseControlSocket();
@@ -2229,6 +2237,9 @@ void XrApp::ResetConnection(const char* reason)
     serverVideoPort_ = 0;
     serverTrackingPort_ = 0;
     serverSpatialPort_ = 0;
+    serverAudioPort_ = 0;
+    serverAudioSampleRateHz_ = 48'000;
+    serverHeadsetAudioEnabled_ = false;
     connectionTime_ = {};
     lastUsbAdbRetryTime_ = {};
     usbAdbRetryAttempts_ = 0;
@@ -2437,6 +2448,145 @@ void XrApp::CloseSpatialSocket()
     }
 }
 
+bool XrApp::StartUsbHeadsetAudio(uint16_t audioPort, uint32_t sampleRateHz)
+{
+    StopHeadsetAudio();
+    if (audioPort == 0 || sampleRateHz != 48'000)
+    {
+        return false;
+    }
+
+    audioTcpSocket_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (audioTcpSocket_ < 0)
+    {
+        LOGE("Failed to create USB TCP audio socket");
+        return false;
+    }
+    ConfigureTcpSocket(audioTcpSocket_);
+
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(audioPort);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (connect(audioTcpSocket_, (sockaddr*)&addr, sizeof(addr)) < 0)
+    {
+        LOGW("USB TCP audio socket unavailable on port %u", audioPort);
+        close(audioTcpSocket_);
+        audioTcpSocket_ = -1;
+        return false;
+    }
+
+    headsetAudioPlayer_ = std::make_unique<HeadsetAudioPlayer>();
+    if (!headsetAudioPlayer_->Start(sampleRateHz, 2))
+    {
+        LOGE("Failed to start Quest headset audio output");
+        headsetAudioPlayer_.reset();
+        close(audioTcpSocket_);
+        audioTcpSocket_ = -1;
+        return false;
+    }
+
+    audioReceiveRunning_.store(true);
+    headsetAudioOutputReady_.store(true);
+    audioReceiveThread_ = std::thread(&XrApp::AudioReceiveThreadMain, this);
+    LOGI("USB headset audio ready on port %u at %u Hz stereo",
+         audioPort, sampleRateHz);
+    return true;
+}
+
+void XrApp::StopHeadsetAudio()
+{
+    headsetAudioOutputReady_.store(false);
+    audioReceiveRunning_.store(false);
+    if (audioTcpSocket_ >= 0)
+    {
+        shutdown(audioTcpSocket_, SHUT_RDWR);
+    }
+    if (audioReceiveThread_.joinable())
+    {
+        if (audioReceiveThread_.get_id() == std::this_thread::get_id())
+        {
+            audioReceiveThread_.detach();
+        }
+        else
+        {
+            audioReceiveThread_.join();
+        }
+    }
+    if (audioTcpSocket_ >= 0)
+    {
+        close(audioTcpSocket_);
+        audioTcpSocket_ = -1;
+    }
+    if (headsetAudioPlayer_)
+    {
+        headsetAudioPlayer_->Stop();
+        headsetAudioPlayer_.reset();
+    }
+}
+
+void XrApp::AudioReceiveThreadMain()
+{
+    uint64_t receivedFrames = 0;
+    uint64_t droppedFrames = 0;
+    uint32_t lastUnderrunCount = 0;
+
+    while (audioReceiveRunning_.load())
+    {
+        protocol::TcpRecordHeader recordHeader = {};
+        std::vector<uint8_t> payload;
+        if (!ReadTcpRecord(audioTcpSocket_, recordHeader, payload))
+        {
+            if (audioReceiveRunning_.load())
+            {
+                OnConnectionLost("USB audio socket closed");
+            }
+            break;
+        }
+        if (recordHeader.type == protocol::TcpRecordType::Disconnect)
+        {
+            if (audioReceiveRunning_.load())
+            {
+                OnConnectionLost("server stopped headset audio");
+            }
+            break;
+        }
+        if (recordHeader.type != protocol::TcpRecordType::Audio ||
+            !headsetAudioPlayer_)
+        {
+            continue;
+        }
+
+        protocol::DecodedAudioPayload decoded = {};
+        if (!protocol::ParseTcpAudioPayload(
+                payload.data(), payload.size(), decoded) ||
+            decoded.header.sampleRateHz != 48'000 ||
+            decoded.header.channels != 2)
+        {
+            LOGW("Ignored malformed USB headset audio record");
+            continue;
+        }
+
+        droppedFrames += headsetAudioPlayer_->Push(
+            decoded.samples.data(), decoded.header.frameCount);
+        receivedFrames += decoded.header.frameCount;
+        if (receivedFrames / 48'000 !=
+            (receivedFrames - decoded.header.frameCount) / 48'000)
+        {
+            const uint32_t underruns = headsetAudioPlayer_->UnderrunCount();
+            LOGI("Headset audio: received=%llu frames buffered=%u dropped=%llu underruns_delta=%u",
+                 static_cast<unsigned long long>(receivedFrames),
+                 headsetAudioPlayer_->BufferedFrames(),
+                 static_cast<unsigned long long>(droppedFrames),
+                 underruns - lastUnderrunCount);
+            lastUnderrunCount = underruns;
+        }
+    }
+
+    headsetAudioOutputReady_.store(false);
+    LOGI("USB headset audio receiver ended");
+}
+
 void XrApp::OnServerFound(const protocol::ServerAnnounce& server, const char* serverIp)
 {
     ConfigureServerConnection(server, serverIp, TransportMode::WifiUdp);
@@ -2564,6 +2714,16 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
     serverTrackingPort_ = server.trackingPort;
     serverSpatialPort_ = server.spatialPort != 0 ? static_cast<uint16_t>(server.spatialPort)
                                                   : protocol::SPATIAL_PORT;
+    serverAudioPort_ = server.audioPort != 0
+        ? static_cast<uint16_t>(server.audioPort)
+        : protocol::AUDIO_PORT;
+    serverAudioSampleRateHz_ = server.audioSampleRateHz != 0
+        ? server.audioSampleRateHz
+        : 48'000;
+    serverHeadsetAudioEnabled_ =
+        usbAdb &&
+        (server.serverFeatures & protocol::SERVER_FEATURE_HEADSET_AUDIO) != 0 &&
+        serverAudioSampleRateHz_ == 48'000;
     videoWidth_ = server.renderWidth;
     videoHeight_ = server.renderHeight;
     strncpy(serverIp_, serverIp, sizeof(serverIp_) - 1);
@@ -2771,6 +2931,12 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
         timeval timeout = {0, 0};
         setsockopt(controlTcpSocket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
         OpenUsbSpatialSocket(serverSpatialPort_);
+        if (serverHeadsetAudioEnabled_ &&
+            !StartUsbHeadsetAudio(serverAudioPort_, serverAudioSampleRateHz_))
+        {
+            LOGW("Server offered headset audio, but Quest audio output could not start");
+            serverHeadsetAudioEnabled_ = false;
+        }
     }
 
     RefreshCurrentDisplayRate("ClientConnect", true);
@@ -2817,6 +2983,14 @@ void XrApp::SendClientConnect(const char* serverIp)
         protocol::CLIENT_CAPABILITY_FOVEATED_ENCODING |
         protocol::CLIENT_CAPABILITY_CLIENT_UPSCALING |
         protocol::CLIENT_CAPABILITY_STREAM_RECONFIGURE;
+    if (headsetAudioOutputReady_.load())
+    {
+        connect.clientCapabilities |= protocol::CLIENT_CAPABILITY_AUDIO_OUTPUT;
+    }
+    if (HasVerifiedMain10Decoder(headsetSystemName_))
+    {
+        connect.clientCapabilities |= protocol::CLIENT_CAPABILITY_TEN_BIT_ENCODING;
+    }
     if (foveationAvailable_ && foveationConfigurationAvailable_ && swapchainUpdateAvailable_)
     {
         connect.clientCapabilities |= protocol::CLIENT_CAPABILITY_CLIENT_FOVEATION;

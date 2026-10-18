@@ -125,7 +125,7 @@ As of March 17, 2026, the pinned non-interactive OpenXR-CTS baseline is green lo
   broadcasting state may answer it on UDP `9946` with a real `ServerAnnounce` sent to the request
   source; the request must not fabricate announce fields, select a codec, or change connection
   state. Broadcast discovery and older clients remain unchanged.
-- Quest USB uses reconnecting ADB reverse TCP on ports `9944`, `9945`, `9946`, and reserved reliable
+- Quest USB uses reconnecting ADB reverse TCP on ports `9944`, `9945`, `9946`, audio port `9947`, and reserved reliable
   spatial port `9948`. ADB reverse does not require an Android `UsbManager` permission dialog.
 - Home first tries its native ADB host protocol on `127.0.0.1:5037`, then the configured external
   `adb` fallback. USB readiness and reverse setup stay asynchronous, request-scoped, bounded, and
@@ -154,8 +154,9 @@ As of March 17, 2026, the pinned non-interactive OpenXR-CTS baseline is green lo
 - Keep `passthrough_enabled`, `passthrough_supported`, and `passthrough_ready` distinct. Application
   alpha blending is a separate restart-bound opt-in; ordinary dark pixels are never transparent by
   default.
-- Headset audio remains protocol/config scaffolding. Do not advertise the server audio feature
-  until capture and playback are implemented.
+- Headset audio is opt-in current-process ScreenCaptureKit capture over Quest USB TCP 9947.
+  Advertise only with the capture backend and listener available; active status requires captured
+  samples. WiFi audio and microphone capture remain unsupported.
 - `xrLocateSpacesKHR` remains accepted as the alias of OpenXR 1.1 `xrLocateSpaces`.
 - Reference spaces currently enumerate `VIEW`, `LOCAL`, `LOCAL_FLOOR`, and `STAGE`.
 

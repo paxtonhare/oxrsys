@@ -18,7 +18,7 @@ The WiFi transport uses UDP with dedicated ports:
 - Video: `9944`
 - Tracking: `9945`
 - Control: `9946`
-- Audio: `9947` (reserved for headset speaker audio; not advertised until an audio stream is active)
+- Audio: `9947` (opt-in Quest USB headset audio)
 - Spatial: `9948` (reserved reliable channel for anchors, scene capture, meshes, and larger async spatial results)
 
 Discovery announces the server and its stream settings. The control port also accepts the optional
@@ -70,13 +70,13 @@ The handshake exposes:
   `ClientConnect.deviceName`
 - preferred codec, supported codec mask, and bitrate limits
 - server feature flags for foveated encoding, client foveation override, client upscaling, stream
-  reconfiguration, passthrough, occlusion, spatial/scene support, and reserved headset audio
+  reconfiguration, passthrough, occlusion, spatial/scene support, and USB headset audio
 - client capability flags for foveated encoding, client foveation, client upscaling, stream
   reconfiguration, passthrough, occlusion, spatial/scene support, and audio output
 - foveated encoding preset and aligned AADT parameters
 - client foveation override preset and client upscaling mode
 - client reprojection mode
-- audio port and sample rate fields reserved for headset speaker audio
+- audio port and sample rate fields for headset speaker audio
 
 `ServerAnnounce` is versioned as a 92-byte v1.0 base followed by v1.1 and v1.2 trailing fields.
 `ClientConnect` is versioned as an 80-byte v1.0 base followed by v1.1 trailing fields. Receivers
@@ -239,10 +239,14 @@ reserved; runtime delivery and client playback are not implemented.
 
 ## Audio Stream
 
-The protocol reserves stereo 48 kHz float PCM speaker audio over UDP `AUDIO_PORT` or TCP `Audio`
-records. The wire structs are present so clients and frontends can parse the protocol safely, but the
-runtime does not advertise `SERVER_FEATURE_HEADSET_AUDIO` until a real capture/playback path is
-attached. Microphone input is out of scope for this speaker-only path.
+Quest USB audio uses stereo 48 kHz float PCM in TCP `Audio` records on port 9947.
+`TcpAudioHeader` carries presentation timestamp, frame count, sample rate, channel count,
+format, and payload size. Receivers reject inconsistent sizes before copying samples.
+`SERVER_FEATURE_HEADSET_AUDIO` requires opt-in configuration, a capture backend, and a
+listening audio socket. The client advertises `CLIENT_CAPABILITY_AUDIO_OUTPUT` only after
+AAudio starts. Runtime active status additionally requires captured samples. The host
+captures only its own process through ScreenCaptureKit. UDP audio and microphone input
+are not implemented. Queues are bounded and discard older audio under backpressure.
 
 ## Session Lifecycle
 

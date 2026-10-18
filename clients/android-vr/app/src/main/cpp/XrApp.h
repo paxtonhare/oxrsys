@@ -19,6 +19,7 @@
 #include <openxr/openxr.h>
 
 #include "NetworkReceiver.h"
+#include "HeadsetAudioPlayer.h"
 #include "QuestPassthroughAlphaPolicy.h"
 #include "QuestShellInteraction.h"
 #include "TrackingSender.h"
@@ -106,6 +107,9 @@ private:
     void CloseControlSocket();
     bool OpenUsbSpatialSocket(uint16_t spatialPort);
     void CloseSpatialSocket();
+    bool StartUsbHeadsetAudio(uint16_t audioPort, uint32_t sampleRateHz);
+    void StopHeadsetAudio();
+    void AudioReceiveThreadMain();
     void SendClientConnect(const char* serverIp);
     void StartControlReceiver();
     void StopControlReceiver();
@@ -257,12 +261,17 @@ private:
     std::unique_ptr<NetworkReceiver> networkReceiver_;
     std::unique_ptr<TrackingSender> trackingSender_;
     std::unique_ptr<VideoDecoder> videoDecoder_;
+    std::unique_ptr<HeadsetAudioPlayer> headsetAudioPlayer_;
     std::mutex videoDecoderMutex_;
     int controlSocket_ = -1;
     int controlTcpSocket_ = -1;
     int spatialTcpSocket_ = -1;
+    int audioTcpSocket_ = -1;
     std::thread controlReceiveThread_;
+    std::thread audioReceiveThread_;
     std::atomic<bool> controlReceiveRunning_{false};
+    std::atomic<bool> audioReceiveRunning_{false};
+    std::atomic<bool> headsetAudioOutputReady_{false};
     TransportMode transportMode_ = TransportMode::WifiUdp;
 
     std::atomic<ConnectionState> connectionState_{ConnectionState::Disconnected};
@@ -274,6 +283,9 @@ private:
     uint16_t serverVideoPort_ = 0;
     uint16_t serverTrackingPort_ = 0;
     uint16_t serverSpatialPort_ = 0;
+    uint16_t serverAudioPort_ = 0;
+    uint32_t serverAudioSampleRateHz_ = 48'000;
+    bool serverHeadsetAudioEnabled_ = false;
     uint32_t decoderEncodedWidth_ = 0;
     uint32_t decoderEncodedHeight_ = 0;
     std::atomic<protocol::VideoCodec> activeVideoCodec_{protocol::VideoCodec::H265};

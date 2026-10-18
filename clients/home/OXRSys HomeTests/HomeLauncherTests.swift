@@ -116,10 +116,11 @@ final class HomeLauncherTests: XCTestCase {
         UsbFfs tcp:9944 tcp:9944
         UsbFfs tcp:9945 tcp:9945
         UsbFfs tcp:9946 tcp:9946
+        UsbFfs tcp:9947 tcp:9947
         UsbFfs tcp:9948 tcp:9948
         """)
 
-        try expect(ports == Set([9944, 9945, 9946, 9948]), "Expected configured USB reverse ports")
+        try expect(ports == Set([9944, 9945, 9946, 9947, 9948]), "Expected configured USB reverse ports")
     }
 
     func testQuestUsbAdbCandidatePaths() throws {

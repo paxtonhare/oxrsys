@@ -269,7 +269,7 @@ USB TCP sends full encoded NAL records and render-pose records, so UDP FEC and N
 - Runtime ABR full mode can reconfigure the encoded stream resolution over USB TCP through `StreamConfigUpdate/Ack` without resizing the OpenXR application's swapchains.
 - The client applies frame-exact render poses for projection submission so headset compositor reprojection has the pose used to render the displayed frame, and can reuse short missing-frame gaps with bounded client reprojection.
 - Dynamic client foveation, shader upscaling, foveated-encoding decompression, app-requested passthrough during streaming, and encoded-resolution reconfiguration are present as evolving paths and should be validated regularly on hardware.
-- Headset speaker audio has protocol fields reserved, but the Quest client does not yet play a runtime audio stream.
+- Opt-in `streaming.headset_audio` streams current-app stereo 48 kHz audio over USB TCP 9947 to AAudio. WiFi audio and microphone capture remain unsupported.
 
 ## Known Limits
 
@@ -277,3 +277,17 @@ USB TCP sends full encoded NAL records and render-pose records, so UDP FEC and N
 - The current path is optimized for low-latency iteration, not for wide-network robustness.
 - Rotation smoothness depends on render-pose match rate staying near 100%; misses should be investigated alongside displayed frame age, stale-frame reuse, dropped frames, NACKs, and keyframe requests.
 - Regular PICO validation is newer than Quest validation and should be kept in the log matrix when controller or hand tracking changes.
+
+## Personal streaming qualification
+
+Only the exact `Meta Quest 3` model advertises HEVC Main10; other models retain 8-bit
+negotiation. Enable `streaming.encoder_10bit` to request Main10 with H.265. The model
+allowlist reflects historical qualification, not a fresh device test.
+
+For USB audio, enable `streaming.headset_audio`, allow macOS Screen & System Audio
+Recording for the OpenXR application, and reconnect. Home reverses TCP 9947 with the
+other USB ports. Capture is limited to the current application, not desktop-wide audio.
+Permission denial leaves video usable without audio. Playback buffers at most 100 ms
+and starts after 30 ms prefill; the host drops old queued audio under backpressure.
+Qualify permission denial, reconnect, app exit, audio/video sync, and simultaneous
+Main10 playback on a physical headset before release.

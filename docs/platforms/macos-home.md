@@ -254,9 +254,10 @@ The Headset Client section owns client-side headset options. `client_foveation_p
 does not send an `XR_FB_foveation` override to the headset client; `off`, `light`, `medium`,
 and `high` explicitly override the Quest/PICO viewer swapchains. This is separate from
 foveated encoding and does not change the desktop OpenXR application's rendering work.
-`client_upscaling` enables the Quest shader upscaling path. `headset_audio` is reserved in
-config and protocol, but the runtime does not advertise audio as active until a real
-capture/playback path is attached.
+`client_upscaling` enables the Quest shader upscaling path. `headset_audio` opts into current-app ScreenCaptureKit audio over Quest USB TCP 9947.
+Grant Screen & System Audio Recording to the OpenXR application. Permission denial
+leaves video usable; active audio status requires captured samples. WiFi audio and
+microphone capture are unsupported.
 
 `client_reprojection` controls short missing-frame smoothing on the Quest client. The default
 `pose` reuses a recent decoded texture with the matched server render pose; `pose_warp` additionally

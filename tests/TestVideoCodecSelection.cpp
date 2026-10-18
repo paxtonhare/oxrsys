@@ -77,3 +77,13 @@ TEST_CASE("Codec selection returns no candidates when no shared hardware codec e
         Backend(false, true));
     CHECK(candidates.empty());
 }
+
+#include "HeadsetCapabilities.h"
+TEST_CASE("Quest Main10 capability is an exact model allowlist", "[codec][quest]")
+{
+    CHECK(HasVerifiedMain10Decoder("Meta Quest 3"));
+    CHECK_FALSE(HasVerifiedMain10Decoder(nullptr));
+    CHECK_FALSE(HasVerifiedMain10Decoder("Meta Quest 3S"));
+    CHECK_FALSE(HasVerifiedMain10Decoder("Meta Quest Pro"));
+    CHECK_FALSE(HasVerifiedMain10Decoder("Oculus Quest 2"));
+}

@@ -169,6 +169,11 @@ set(OXRSYS_LOGCAT_TEST_ENV
 )
 
 add_executable(oxrsys_runtime_tests
+    tests/TestAudioTransport.cpp
+    tests/TestAudioPlaybackBuffer.cpp
+    tests/TestStreamingAudioQueue.cpp
+    clients/android-vr/app/src/main/cpp/AudioPlaybackBuffer.cpp
+    runtime/src/StreamingAudioQueue.cpp
     tests/TestBoundedDrain.cpp
     tests/TestClientLiveness.cpp
     tests/TestDisplayRefreshRate.cpp

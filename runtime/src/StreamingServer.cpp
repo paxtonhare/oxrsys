@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "StreamingServer.h"
+#include "AudioCapture.h"
 #include "ClientLiveness.h"
 #include "Config.h"
 #include "RuntimePlatform.h"
@@ -13,6 +14,7 @@
 #include "VideoEncoder.h"
 #include <Foveation.h>
 #include <FecCodec.h>
+#include <AudioTransport.h>
 
 #include <spdlog/spdlog.h>
 
@@ -512,6 +514,7 @@ struct EncodeTelemetry
 
 StreamingServer::StreamingServer()
     : frameQueue_([this](StreamingFrame& frame) { ReleaseStreamingFrame(frame); }),
+      audioQueue_(8),
       packetDispatchState_(std::make_shared<PacketDispatchState>())
 {
 }
@@ -607,6 +610,12 @@ bool StreamingServer::Start(uint32_t renderWidth, uint32_t renderHeight, uint32_
     clientSupportsStreamReconfigure_.store(false);
     clientSupportsMixedRealityPassthrough_.store(false);
     clientSupportsSpatialEntity_.store(false);
+    clientSupportsAudioOutput_.store(false);
+    audioTransportAvailable_.store(false);
+    headsetAudioNegotiated_.store(false);
+    audioFrameIndex_.store(0);
+    audioFramesCaptured_.store(0);
+    audioQueueDrops_.store(0);
     activeVideoCodec_.store(oxr::protocol::VideoCodec::H265);
     {
         std::lock_guard<std::mutex> lock(streamConfigMutex_);
@@ -707,6 +716,7 @@ bool StreamingServer::Start(uint32_t renderWidth, uint32_t renderHeight, uint32_
     }
 
     frameQueue_.Start();
+    audioQueue_.Start();
     running_.store(true);
     state_.store(State::Broadcasting);
     RuntimeStatus::SetIdle();
@@ -718,6 +728,7 @@ bool StreamingServer::Start(uint32_t renderWidth, uint32_t renderHeight, uint32_
             spdlog::error("StreamingServer: Failed to start required USB ADB TCP listeners");
             running_.store(false);
             frameQueue_.Stop();
+            audioQueue_.Stop();
             oxrsys::runtime_socket::Close(broadcastSocket_);
             oxrsys::runtime_socket::Close(controlSocket_);
             oxrsys::runtime_socket::Close(videoSocket_);
@@ -739,6 +750,7 @@ bool StreamingServer::Start(uint32_t renderWidth, uint32_t renderHeight, uint32_
     }
     controlThread_ = std::thread(&StreamingServer::ControlThread, this);
     videoSendThread_ = std::thread(&StreamingServer::VideoSendThread, this);
+    audioSendThread_ = std::thread(&StreamingServer::AudioSendThread, this);
     encodeThread_ = std::thread(&StreamingServer::EncodeThread, this);
 
     std::string ip = GetLocalIpAddress();
@@ -754,8 +766,10 @@ bool StreamingServer::Stop(std::chrono::nanoseconds timeout)
 
     InvalidateCallbackAccess();
     running_.store(false);
+    StopHeadsetAudio();
     state_.store(State::Stopped);
     frameQueue_.Stop();
+    audioQueue_.Stop();
     {
         // Taking the queue lock orders the running_ store against
         // VideoSendThread's predicate check; a notify issued between the
@@ -794,11 +808,14 @@ bool StreamingServer::Stop(std::chrono::nanoseconds timeout)
     JoinWorkerThread(controlThread_, "control");
     JoinWorkerThread(encodeThread_, "encode");
     JoinWorkerThread(videoSendThread_, "video send");
+    JoinWorkerThread(audioSendThread_, "audio send");
     JoinWorkerThread(tcpControlThread_, "USB control");
     JoinWorkerThread(tcpVideoThread_, "USB video");
     JoinWorkerThread(tcpTrackingThread_, "USB tracking");
+    JoinWorkerThread(tcpAudioThread_, "USB audio");
     JoinWorkerThread(tcpSpatialThread_, "USB spatial");
     frameQueue_.Clear();
+    audioQueue_.Clear();
     ClearVideoSendQueue();
 
     if (trackingReceiver_ != nullptr)
@@ -908,6 +925,12 @@ oxr::protocol::ServerAnnounce StreamingServer::BuildServerAnnounce(
     {
         announce.serverFeatures |= oxr::protocol::SERVER_FEATURE_CLIENT_UPSCALING;
     }
+    if (reliableControlTransport &&
+        config.headsetAudio &&
+        audioTransportAvailable_.load())
+    {
+        announce.serverFeatures |= oxr::protocol::SERVER_FEATURE_HEADSET_AUDIO;
+    }
     if (config.abrMode == "full" && reliableControlTransport)
     {
         announce.serverFeatures |= oxr::protocol::SERVER_FEATURE_STREAM_RECONFIGURE;
@@ -920,9 +943,6 @@ oxr::protocol::ServerAnnounce StreamingServer::BuildServerAnnounce(
     // fail-closed until a valid app depth layer, headset depth, or scene mesh
     // source is connected to the compositor path.
     // Spatial flags remain fail-closed until a real backend is attached.
-    // Headset audio is part of the wire protocol, but the stream is advertised
-    // only once an actual capture/playback path is attached.
-
     announce.audioPort = oxr::protocol::AUDIO_PORT;
     announce.foveatedEncodingPreset = foveationPreset;
     announce.clientFoveationPreset = clientFoveationPreset;
@@ -1011,6 +1031,12 @@ bool StreamingServer::StartUsbTcpListeners()
     tcpControlListenSocket_ = CreateLoopbackListener(oxr::protocol::CONTROL_PORT);
     tcpVideoListenSocket_ = CreateLoopbackListener(oxr::protocol::VIDEO_PORT);
     tcpTrackingListenSocket_ = CreateLoopbackListener(oxr::protocol::TRACKING_PORT);
+    if (AudioCapture::IsSupported())
+    {
+        tcpAudioListenSocket_ = CreateLoopbackListener(oxr::protocol::AUDIO_PORT);
+        audioTransportAvailable_.store(
+            oxrsys::runtime_socket::IsValid(tcpAudioListenSocket_));
+    }
     tcpSpatialListenSocket_ = CreateLoopbackListener(oxr::protocol::SPATIAL_PORT);
     const bool spatialBackendAttached = false;
     if (!oxrsys::streaming_transport::UsbAdbTcpListenersReady(
@@ -1027,6 +1053,14 @@ bool StreamingServer::StartUsbTcpListeners()
     tcpControlThread_ = std::thread(&StreamingServer::TcpControlThread, this);
     tcpVideoThread_ = std::thread(&StreamingServer::TcpVideoThread, this);
     tcpTrackingThread_ = std::thread(&StreamingServer::TcpTrackingThread, this);
+    if (oxrsys::runtime_socket::IsValid(tcpAudioListenSocket_))
+    {
+        tcpAudioThread_ = std::thread(&StreamingServer::TcpAudioThread, this);
+    }
+    else if (Config::Get().GetValues().headsetAudio)
+    {
+        spdlog::warn("StreamingServer: headset audio requested, but the macOS capture or USB audio listener is unavailable");
+    }
     if (oxrsys::runtime_socket::IsValid(tcpSpatialListenSocket_))
     {
         tcpSpatialThread_ = std::thread(&StreamingServer::TcpSpatialThread, this);
@@ -1036,10 +1070,11 @@ bool StreamingServer::StartUsbTcpListeners()
         spdlog::warn("StreamingServer: optional USB ADB spatial listener on localhost port {} unavailable; continuing without spatial channel",
                      oxr::protocol::SPATIAL_PORT);
     }
-    spdlog::info("StreamingServer: USB ADB TCP listeners active on localhost ports {}/{}/{}{}",
+    spdlog::info("StreamingServer: USB ADB TCP listeners active on localhost ports {}/{}/{}{}{}",
                   oxr::protocol::CONTROL_PORT,
                   oxr::protocol::VIDEO_PORT,
                   oxr::protocol::TRACKING_PORT,
+                  oxrsys::runtime_socket::IsValid(tcpAudioListenSocket_) ? "/9947" : "",
                   oxrsys::runtime_socket::IsValid(tcpSpatialListenSocket_) ? "/9948" : "");
     return true;
 }
@@ -1064,16 +1099,19 @@ void StreamingServer::StopUsbTcpSockets()
         &tcpControlListenSocket_,
         &tcpVideoListenSocket_,
         &tcpTrackingListenSocket_,
+        &tcpAudioListenSocket_,
         &tcpSpatialListenSocket_,
         &tcpControlClientSocket_,
         &tcpVideoClientSocket_,
         &tcpTrackingClientSocket_,
+        &tcpAudioClientSocket_,
         &tcpSpatialClientSocket_,
     };
     for (SocketHandle* socketPtr : sockets)
     {
         CloseTcpSocket(*socketPtr);
     }
+    audioTransportAvailable_.store(false);
 }
 
 void StreamingServer::TcpControlThread()
@@ -1254,6 +1292,30 @@ void StreamingServer::TcpTrackingThread()
     spdlog::info("StreamingServer: USB ADB tracking thread ended");
 }
 
+void StreamingServer::TcpAudioThread()
+{
+    while (running_.load() && usbAdbEnabled_)
+    {
+        SocketHandle clientSocket = AcceptWithTimeout(tcpAudioListenSocket_);
+        if (!oxrsys::runtime_socket::IsValid(clientSocket))
+        {
+            continue;
+        }
+
+        ConfigureTcpSocket(clientSocket);
+        {
+            std::lock_guard<std::mutex> lock(tcpSocketMutex_);
+            if (oxrsys::runtime_socket::IsValid(tcpAudioClientSocket_))
+            {
+                CloseTcpSocket(tcpAudioClientSocket_);
+            }
+            tcpAudioClientSocket_ = clientSocket;
+        }
+        spdlog::info("StreamingServer: USB ADB audio client connected");
+    }
+    spdlog::info("StreamingServer: USB ADB audio thread ended");
+}
+
 void StreamingServer::TcpSpatialThread()
 {
     while (running_.load() && usbAdbEnabled_)
@@ -1386,6 +1448,7 @@ void StreamingServer::EncodeThread()
         }
 
         const uint32_t submittedFrameIndex = frame.frameIndex;
+        std::weak_ptr<VideoEncoder> weakEncoder = encoder;
         bool encoded = encoder->EncodeStereo(
             std::move(frame.source),
             frame.timestampNs,
@@ -1420,7 +1483,7 @@ void StreamingServer::EncodeThread()
                 memcpy(nal.tcpPayload.data() + sizeof(nalHeader), nalData, nalSize);
                 encodedFrame->nals.push_back(std::move(nal));
             },
-            [callbackAccess, telemetry, queueWaitMs, encoder, config, encodedFrame](
+            [callbackAccess, telemetry, queueWaitMs, weakEncoder, config, encodedFrame](
                 const VideoEncoder::FrameMetrics& metrics)
             {
                 std::lock_guard<std::mutex> callbackLock(callbackAccess->mutex);
@@ -1465,7 +1528,10 @@ void StreamingServer::EncodeThread()
                     MetricSummary totalSummary = telemetry->totalPipelineMs.Consume();
 
                     const uint32_t replacedFrames = server->replacedFrameCount_.exchange(0);
-                    const uint32_t encoderDrops = encoder->GetDroppedFrameCount();
+                    const std::shared_ptr<VideoEncoder> liveEncoder = weakEncoder.lock();
+                    const uint32_t encoderDrops = liveEncoder
+                        ? liveEncoder->GetDroppedFrameCount()
+                        : server->encoderDroppedFramesTotalForAbr_.load();
                     const uint32_t keyframeRequests = server->requestKeyframeCount_.exchange(0);
                     const uint32_t pendingDepthMax = server->pendingFrameDepthMax_.exchange(0);
                     const uint32_t videoSendDepthMax = server->videoSendQueueDepthMax_.exchange(0);
@@ -1473,6 +1539,8 @@ void StreamingServer::EncodeThread()
                     const uint32_t videoTcpFailures = server->videoTcpSendFailures_.exchange(0);
                     const uint32_t udpRetransmits =
                         server->videoUdpRetransmittedPackets_.exchange(0);
+                    const uint32_t audioQueueDrops =
+                        server->audioQueueDrops_.exchange(0);
                     std::string abrModeName;
                     std::string abrStateName;
                     std::string abrProfileName;
@@ -1549,7 +1617,10 @@ void StreamingServer::EncodeThread()
                         stats.passthroughEnabled && stats.passthroughSupported;
                     stats.occlusionMode = "off";
                     stats.spatialEnabled = false;
-                    stats.headsetAudio = false;
+                    stats.headsetAudio =
+                        server->headsetAudioNegotiated_.load() &&
+                        server->audioFramesCaptured_.load() > 0 &&
+                        SteadyClockNowNs() - server->lastAudioCaptureNs_.load() < 2'000'000'000;
                     stats.serverPipelineLatencyMs = server->serverPipelineLatencyMs_.load();
                     stats.clientPipelineLatencyMs = server->clientPipelineLatencyMs_.load();
                     stats.clientReceiveToSubmitMs = server->clientReceiveToSubmitMs_.load();
@@ -1569,7 +1640,9 @@ void StreamingServer::EncodeThread()
                     stats.encodeCallbackP95Ms = callbackSummary.p95;
                     stats.encodeTotalAverageMs = totalSummary.average;
                     stats.encodeTotalP95Ms = totalSummary.p95;
-                    stats.encodedFramesTotal = encoder->GetEncodedFrameCount();
+                    stats.encodedFramesTotal = liveEncoder
+                        ? liveEncoder->GetEncodedFrameCount()
+                        : static_cast<uint32_t>(metrics.frameNumber + 1);
                     stats.encoderDroppedFramesTotal = encoderDrops;
                     stats.replacedFramesDelta = replacedFrames;
                     stats.keyframeRequestsDelta = keyframeRequests;
@@ -1588,7 +1661,7 @@ void StreamingServer::EncodeThread()
                         "StreamingServer: encode queue(avg/p95={:.2f}/{:.2f}ms) gpu({:.2f}/{:.2f}) "
                         "submit({:.3f}/{:.3f}) callback({:.2f}/{:.2f}) total({:.2f}/{:.2f}) "
                         "replaced={} encDrops={} keyframeReq={} depthMax={} sendDepth={} sendDrops={} "
-                        "tcpFail={} udpRetrans={} abr={}/{} profile={} displayedAge={:.2f}ms reproj={} stale={} poseFallbacks={}",
+                        "tcpFail={} udpRetrans={} audioDrops={} abr={}/{} profile={} displayedAge={:.2f}ms reproj={} stale={} poseFallbacks={}",
                         queueSummary.average, queueSummary.p95,
                         gpuSummary.average, gpuSummary.p95,
                         submitSummary.average, submitSummary.p95,
@@ -1602,6 +1675,7 @@ void StreamingServer::EncodeThread()
                         videoSendDrops,
                         videoTcpFailures,
                         udpRetransmits,
+                        audioQueueDrops,
                         abrModeName,
                         abrStateName,
                         abrProfileName,
@@ -1659,6 +1733,7 @@ void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& cl
     clientSupportsMixedRealityPassthrough_.store(clientSupportsPassthrough);
     clientSupportsSpatialEntity_.store(
         HasClientCapability(clientConnect, oxr::protocol::CLIENT_CAPABILITY_SPATIAL_ENTITY));
+    clientSupportsAudioOutput_.store(false);
     if (Config::Get().GetValues().passthroughEnabled && !clientSupportsPassthrough)
     {
         spdlog::warn("StreamingServer: client '{}' did not advertise passthrough support; app alpha/source-alpha frames will be streamed without headset passthrough",
@@ -1884,6 +1959,8 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
     clientSupportsMixedRealityPassthrough_.store(clientSupportsPassthrough);
     clientSupportsSpatialEntity_.store(
         HasClientCapability(clientConnect, oxr::protocol::CLIENT_CAPABILITY_SPATIAL_ENTITY));
+    clientSupportsAudioOutput_.store(
+        HasClientCapability(clientConnect, oxr::protocol::CLIENT_CAPABILITY_AUDIO_OUTPUT));
     if (Config::Get().GetValues().passthroughEnabled && !clientSupportsPassthrough)
     {
         spdlog::warn("StreamingServer: USB client '{}' did not advertise passthrough support; app alpha/source-alpha frames will be streamed without headset passthrough",
@@ -2084,6 +2161,10 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
             }
         }
     }
+    else
+    {
+        StartHeadsetAudio(clientConnect);
+    }
 }
 
 void StreamingServer::HandleClientDisconnect()
@@ -2117,6 +2198,7 @@ void StreamingServer::HandleClientDisconnect()
         trackingReceiver_->Reset();
     }
     InvalidateCallbackAccess();
+    StopHeadsetAudio();
 
     {
         std::lock_guard<std::mutex> lock(packetDispatchState_->mutex);
@@ -2130,6 +2212,7 @@ void StreamingServer::HandleClientDisconnect()
         CloseTcpSocket(tcpControlClientSocket_);
         CloseTcpSocket(tcpVideoClientSocket_);
         CloseTcpSocket(tcpTrackingClientSocket_);
+        CloseTcpSocket(tcpAudioClientSocket_);
         CloseTcpSocket(tcpSpatialClientSocket_);
     }
 
@@ -2164,6 +2247,7 @@ void StreamingServer::HandleClientDisconnect()
     clientSupportsStreamReconfigure_.store(false);
     clientSupportsMixedRealityPassthrough_.store(false);
     clientSupportsSpatialEntity_.store(false);
+    clientSupportsAudioOutput_.store(false);
     activeVideoCodec_.store(oxr::protocol::VideoCodec::H265);
     {
         std::lock_guard<std::mutex> lock(streamConfigMutex_);
@@ -2200,6 +2284,124 @@ void StreamingServer::HandleClientDisconnect()
 
     RuntimeStatus::SetIdle();
     spdlog::info("StreamingServer: Client disconnected, resuming broadcast");
+}
+
+bool StreamingServer::StartHeadsetAudio(
+    const oxr::protocol::ClientConnect& clientConnect)
+{
+    const ConfigValues config = Config::Get().GetValues();
+    const bool clientSupportsAudio =
+        HasClientCapability(clientConnect, oxr::protocol::CLIENT_CAPABILITY_AUDIO_OUTPUT) &&
+        clientConnect.audioSampleRateHz == 48'000;
+    clientSupportsAudioOutput_.store(clientSupportsAudio);
+    if (!config.headsetAudio || !audioTransportAvailable_.load() || !clientSupportsAudio)
+    {
+        return false;
+    }
+
+    SocketHandle audioSocket = oxrsys::runtime_socket::InvalidSocket;
+    for (int attempt = 0; attempt < 50 && running_.load(); ++attempt)
+    {
+        {
+            std::lock_guard<std::mutex> lock(tcpSocketMutex_);
+            audioSocket = tcpAudioClientSocket_;
+        }
+        if (oxrsys::runtime_socket::IsValid(audioSocket))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (!config.headsetAudio || !audioTransportAvailable_.load() ||
+        !clientSupportsAudio || !oxrsys::runtime_socket::IsValid(audioSocket))
+    {
+        if (config.headsetAudio && !clientSupportsAudio)
+        {
+            spdlog::warn("StreamingServer: headset audio requested, but the USB client did not advertise 48 kHz audio output");
+        }
+        else if (config.headsetAudio &&
+                 !oxrsys::runtime_socket::IsValid(audioSocket))
+        {
+            spdlog::warn("StreamingServer: headset audio requested, but the USB audio socket is not connected");
+        }
+        return false;
+    }
+
+    StopHeadsetAudio();
+    audioQueue_.Clear();
+    audioFrameIndex_.store(0);
+    audioFramesCaptured_.store(0);
+    audioQueueDrops_.store(0);
+
+    const std::shared_ptr<CallbackAccess> callbackAccess = GetCallbackAccess();
+    if (callbackAccess == nullptr)
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> captureLock(audioCaptureMutex_);
+    if (!running_.load())
+    {
+        return false;
+    }
+    audioCapture_ = std::make_unique<AudioCapture>();
+    const bool startRequested = audioCapture_->Start(
+        [callbackAccess](const float* samples,
+                         uint32_t frameCount,
+                         uint32_t sampleRateHz,
+                         uint16_t channels,
+                         int64_t presentationTimeNs) {
+            std::lock_guard<std::mutex> callbackLock(callbackAccess->mutex);
+            StreamingServer* server = callbackAccess->accepting
+                ? callbackAccess->server
+                : nullptr;
+            if (server == nullptr || !server->headsetAudioNegotiated_.load() ||
+                samples == nullptr || frameCount == 0 ||
+                sampleRateHz != 48'000 || channels != 2)
+            {
+                return;
+            }
+
+            // Ten-millisecond records bound eight pending records to 80 ms.
+            for (uint32_t offset = 0; offset < frameCount; offset += 480)
+            {
+                StreamingAudioFrame frame = {};
+                frame.presentationTimeNs = presentationTimeNs +
+                    static_cast<int64_t>(offset) * 1'000'000'000 / sampleRateHz;
+                frame.frameIndex = server->audioFrameIndex_.fetch_add(1);
+                frame.frameCount = std::min(480u, frameCount - offset);
+                frame.samples.assign(samples + static_cast<size_t>(offset) * channels,
+                    samples + static_cast<size_t>(offset + frame.frameCount) * channels);
+                if (server->audioQueue_.Push(std::move(frame)))
+                {
+                    server->audioQueueDrops_.fetch_add(1);
+                }
+            }
+            server->lastAudioCaptureNs_.store(SteadyClockNowNs());
+            server->audioFramesCaptured_.fetch_add(frameCount);
+        });
+    if (!startRequested)
+    {
+        audioCapture_.reset();
+        return false;
+    }
+
+    headsetAudioNegotiated_.store(true);
+    spdlog::info("StreamingServer: requested current-app audio capture for USB headset playback");
+    return true;
+}
+
+void StreamingServer::StopHeadsetAudio()
+{
+    std::lock_guard<std::mutex> captureLock(audioCaptureMutex_);
+    headsetAudioNegotiated_.store(false);
+    if (audioCapture_ != nullptr)
+    {
+        audioCapture_->Stop();
+        audioCapture_.reset();
+    }
+    audioQueue_.Clear();
+    audioFramesCaptured_.store(0);
 }
 
 void StreamingServer::HandleLatencyReport(const oxr::protocol::LatencyReport& report)
@@ -2854,6 +3056,63 @@ void StreamingServer::VideoSendThread()
 
     ClearVideoSendQueue();
     spdlog::info("StreamingServer: video send thread ended");
+}
+
+void StreamingServer::AudioSendThread()
+{
+    oxrsys::runtime_platform::SetCurrentThreadTimeSensitive();
+    while (running_.load())
+    {
+        StreamingAudioFrame frame = {};
+        if (!audioQueue_.WaitPop(running_, frame))
+        {
+            if (!running_.load())
+            {
+                break;
+            }
+            continue;
+        }
+        if (!headsetAudioNegotiated_.load() || frame.frameCount == 0 ||
+            frame.samples.size() != static_cast<size_t>(frame.frameCount) * 2)
+        {
+            continue;
+        }
+
+        SocketHandle audioSocket = oxrsys::runtime_socket::InvalidSocket;
+        {
+            std::lock_guard<std::mutex> lock(tcpSocketMutex_);
+            audioSocket = tcpAudioClientSocket_;
+        }
+        if (!oxrsys::runtime_socket::IsValid(audioSocket))
+        {
+            continue;
+        }
+
+        std::vector<uint8_t> payload;
+        if (!oxr::protocol::BuildTcpAudioPayload(
+                frame.presentationTimeNs, frame.frameCount, 48'000, 2,
+                frame.samples.data(), frame.samples.size(), payload))
+        {
+            continue;
+        }
+        if (!SendTcpRecord(audioSocket, oxr::protocol::TcpRecordType::Audio,
+                           payload.data(), payload.size()))
+        {
+            headsetAudioNegotiated_.store(false);
+            audioQueue_.Clear();
+            {
+                std::lock_guard<std::mutex> lock(tcpSocketMutex_);
+                if (tcpAudioClientSocket_ == audioSocket)
+                {
+                    CloseTcpSocket(tcpAudioClientSocket_);
+                }
+            }
+            spdlog::warn("StreamingServer: USB headset audio socket closed");
+        }
+    }
+
+    audioQueue_.Clear();
+    spdlog::info("StreamingServer: audio send thread ended");
 }
 
 void StreamingServer::SendEncodedVideoFrame(const EncodedVideoFrame& frame)

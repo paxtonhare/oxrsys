@@ -11,6 +11,7 @@ add_library(oxrsys_runtime SHARED
     src/RuntimeStatus.cpp
     src/RuntimePlatform.cpp
     src/RuntimeSockets.cpp
+    src/StreamingAudioQueue.cpp
     src/StreamingFrameQueue.cpp
     src/VideoCodecSelection.cpp
     src/Instance.cpp
@@ -25,6 +26,7 @@ add_library(oxrsys_runtime SHARED
     src/SwapchainCommon.cpp
     src/SwapchainVulkan.cpp
     src/SwapchainMetal.mm
+    src/AudioCaptureMac.mm
     src/VideoEncoder.mm
     src/EncoderHelperClient.mm
     src/EncoderPathPolicy.cpp
@@ -61,6 +63,8 @@ target_link_libraries(oxrsys_runtime PRIVATE
     "-framework Foundation"
     "-framework QuartzCore"
     "-framework VideoToolbox"
+    "-framework ScreenCaptureKit"
+    "-framework AudioToolbox"
     "-framework CoreMedia"
     "-framework CoreVideo"
     "-framework IOSurface"

@@ -169,6 +169,7 @@ set(OXRSYS_LOGCAT_TEST_ENV
 )
 
 add_executable(oxrsys_runtime_tests
+    tests/TestAudioConnectionState.cpp
     tests/TestAudioTransport.cpp
     tests/TestAudioPlaybackBuffer.cpp
     tests/TestStreamingAudioQueue.cpp

@@ -1094,6 +1094,10 @@ void StreamingServer::SendUsbDisconnectBestEffort()
 
 void StreamingServer::StopUsbTcpSockets()
 {
+    audioConnection_.Replace(oxrsys::runtime_socket::InvalidSocket, [this] {
+        headsetAudioNegotiated_.store(false);
+        audioQueue_.Clear();
+    });
     std::lock_guard<std::mutex> lock(tcpSocketMutex_);
     SocketHandle* sockets[] = {
         &tcpControlListenSocket_,
@@ -1104,7 +1108,6 @@ void StreamingServer::StopUsbTcpSockets()
         &tcpControlClientSocket_,
         &tcpVideoClientSocket_,
         &tcpTrackingClientSocket_,
-        &tcpAudioClientSocket_,
         &tcpSpatialClientSocket_,
     };
     for (SocketHandle* socketPtr : sockets)
@@ -1303,14 +1306,10 @@ void StreamingServer::TcpAudioThread()
         }
 
         ConfigureTcpSocket(clientSocket);
-        {
-            std::lock_guard<std::mutex> lock(tcpSocketMutex_);
-            if (oxrsys::runtime_socket::IsValid(tcpAudioClientSocket_))
-            {
-                CloseTcpSocket(tcpAudioClientSocket_);
-            }
-            tcpAudioClientSocket_ = clientSocket;
-        }
+        audioConnection_.Replace(clientSocket, [this] {
+            headsetAudioNegotiated_.store(false);
+            audioQueue_.Clear();
+        });
         spdlog::info("StreamingServer: USB ADB audio client connected");
     }
     spdlog::info("StreamingServer: USB ADB audio thread ended");
@@ -1724,6 +1723,7 @@ void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& cl
         clientIp_ = ipStr;
         clientPort_ = ntohs(clientAddr.sin_port);
         clientName_ = clientName;
+        ++clientGeneration_;
         clientUsesUsbAdb_.store(false);
     }
     clientSupportsStreamReconfigure_.store(
@@ -1950,6 +1950,7 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
         clientIp_ = "127.0.0.1";
         clientPort_ = oxr::protocol::CONTROL_PORT;
         clientName_ = clientName;
+        ++clientGeneration_;
         clientUsesUsbAdb_.store(true);
     }
     clientSupportsStreamReconfigure_.store(
@@ -2208,11 +2209,14 @@ void StreamingServer::HandleClientDisconnect()
     }
     if (wasUsbClient)
     {
+        audioConnection_.Replace(oxrsys::runtime_socket::InvalidSocket, [this] {
+            headsetAudioNegotiated_.store(false);
+            audioQueue_.Clear();
+        });
         std::lock_guard<std::mutex> lock(tcpSocketMutex_);
         CloseTcpSocket(tcpControlClientSocket_);
         CloseTcpSocket(tcpVideoClientSocket_);
         CloseTcpSocket(tcpTrackingClientSocket_);
-        CloseTcpSocket(tcpAudioClientSocket_);
         CloseTcpSocket(tcpSpatialClientSocket_);
     }
 
@@ -2299,28 +2303,21 @@ bool StreamingServer::StartHeadsetAudio(
         return false;
     }
 
-    SocketHandle audioSocket = oxrsys::runtime_socket::InvalidSocket;
-    for (int attempt = 0; attempt < 50 && running_.load(); ++attempt)
+    auto audioLease = audioConnection_.Acquire();
+    for (int attempt = 0; attempt < 50 && running_.load() && !audioLease; ++attempt)
     {
-        {
-            std::lock_guard<std::mutex> lock(tcpSocketMutex_);
-            audioSocket = tcpAudioClientSocket_;
-        }
-        if (oxrsys::runtime_socket::IsValid(audioSocket))
-        {
-            break;
-        }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        audioLease = audioConnection_.Acquire();
     }
     if (!config.headsetAudio || !audioTransportAvailable_.load() ||
-        !clientSupportsAudio || !oxrsys::runtime_socket::IsValid(audioSocket))
+        !clientSupportsAudio || !audioLease)
     {
         if (config.headsetAudio && !clientSupportsAudio)
         {
             spdlog::warn("StreamingServer: headset audio requested, but the USB client did not advertise 48 kHz audio output");
         }
         else if (config.headsetAudio &&
-                 !oxrsys::runtime_socket::IsValid(audioSocket))
+                 !audioLease)
         {
             spdlog::warn("StreamingServer: headset audio requested, but the USB audio socket is not connected");
         }
@@ -2328,6 +2325,7 @@ bool StreamingServer::StartHeadsetAudio(
     }
 
     StopHeadsetAudio();
+    audioLease = audioConnection_.Acquire();
     audioQueue_.Clear();
     audioFrameIndex_.store(0);
     audioFramesCaptured_.store(0);
@@ -2346,7 +2344,7 @@ bool StreamingServer::StartHeadsetAudio(
     }
     audioCapture_ = std::make_unique<AudioCapture>();
     const bool startRequested = audioCapture_->Start(
-        [callbackAccess](const float* samples,
+        [callbackAccess, audioLease](const float* samples,
                          uint32_t frameCount,
                          uint32_t sampleRateHz,
                          uint16_t channels,
@@ -2362,23 +2360,26 @@ bool StreamingServer::StartHeadsetAudio(
                 return;
             }
 
-            // Ten-millisecond records bound eight pending records to 80 ms.
-            for (uint32_t offset = 0; offset < frameCount; offset += 480)
-            {
-                StreamingAudioFrame frame = {};
-                frame.presentationTimeNs = presentationTimeNs +
-                    static_cast<int64_t>(offset) * 1'000'000'000 / sampleRateHz;
-                frame.frameIndex = server->audioFrameIndex_.fetch_add(1);
-                frame.frameCount = std::min(480u, frameCount - offset);
-                frame.samples.assign(samples + static_cast<size_t>(offset) * channels,
-                    samples + static_cast<size_t>(offset + frame.frameCount) * channels);
-                if (server->audioQueue_.Push(std::move(frame)))
+            server->audioConnection_.WithCurrent(audioLease, [&] {
+                // Ten-millisecond records bound eight pending records to 80 ms.
+                for (uint32_t offset = 0; offset < frameCount; offset += 480)
                 {
-                    server->audioQueueDrops_.fetch_add(1);
+                    StreamingAudioFrame frame = {};
+                    frame.presentationTimeNs = presentationTimeNs +
+                        static_cast<int64_t>(offset) * 1'000'000'000 / sampleRateHz;
+                    frame.generation = audioLease.generation;
+                    frame.frameIndex = server->audioFrameIndex_.fetch_add(1);
+                    frame.frameCount = std::min(480u, frameCount - offset);
+                    frame.samples.assign(samples + static_cast<size_t>(offset) * channels,
+                        samples + static_cast<size_t>(offset + frame.frameCount) * channels);
+                    if (server->audioQueue_.Push(std::move(frame)))
+                    {
+                        server->audioQueueDrops_.fetch_add(1);
+                    }
                 }
-            }
-            server->lastAudioCaptureNs_.store(SteadyClockNowNs());
-            server->audioFramesCaptured_.fetch_add(frameCount);
+                server->lastAudioCaptureNs_.store(SteadyClockNowNs());
+                server->audioFramesCaptured_.fetch_add(frameCount);
+            });
         });
     if (!startRequested)
     {
@@ -2386,7 +2387,10 @@ bool StreamingServer::StartHeadsetAudio(
         return false;
     }
 
-    headsetAudioNegotiated_.store(true);
+    if (!audioConnection_.WithCurrent(audioLease, [this] { headsetAudioNegotiated_.store(true); }))
+    {
+        return false;
+    }
     spdlog::info("StreamingServer: requested current-app audio capture for USB headset playback");
     return true;
 }
@@ -2394,7 +2398,10 @@ bool StreamingServer::StartHeadsetAudio(
 void StreamingServer::StopHeadsetAudio()
 {
     std::lock_guard<std::mutex> captureLock(audioCaptureMutex_);
-    headsetAudioNegotiated_.store(false);
+    audioConnection_.ResetGeneration([this] {
+        headsetAudioNegotiated_.store(false);
+        audioQueue_.Clear();
+    });
     if (audioCapture_ != nullptr)
     {
         audioCapture_->Stop();
@@ -3078,12 +3085,8 @@ void StreamingServer::AudioSendThread()
             continue;
         }
 
-        SocketHandle audioSocket = oxrsys::runtime_socket::InvalidSocket;
-        {
-            std::lock_guard<std::mutex> lock(tcpSocketMutex_);
-            audioSocket = tcpAudioClientSocket_;
-        }
-        if (!oxrsys::runtime_socket::IsValid(audioSocket))
+        const auto audioLease = audioConnection_.Acquire();
+        if (!audioLease || audioLease.generation != frame.generation)
         {
             continue;
         }
@@ -3095,19 +3098,14 @@ void StreamingServer::AudioSendThread()
         {
             continue;
         }
-        if (!SendTcpRecord(audioSocket, oxr::protocol::TcpRecordType::Audio,
+        if (!SendTcpRecord(audioLease.Descriptor(), oxr::protocol::TcpRecordType::Audio,
                            payload.data(), payload.size()))
         {
-            headsetAudioNegotiated_.store(false);
-            audioQueue_.Clear();
-            {
-                std::lock_guard<std::mutex> lock(tcpSocketMutex_);
-                if (tcpAudioClientSocket_ == audioSocket)
-                {
-                    CloseTcpSocket(tcpAudioClientSocket_);
-                }
-            }
-            spdlog::warn("StreamingServer: USB headset audio socket closed");
+            audioConnection_.WithCurrent(audioLease, [this] {
+                headsetAudioNegotiated_.store(false);
+                audioQueue_.Clear();
+            });
+            spdlog::warn("StreamingServer: USB headset audio send failed");
         }
     }
 
@@ -3594,6 +3592,12 @@ void StreamingServer::HandleNackRequest(const oxr::protocol::NackRequest& reques
                       retransmitted, std::popcount(request.missingBitmask),
                       request.frameIndex);
     }
+}
+
+std::pair<uint64_t, std::string> StreamingServer::GetClientIdentity() const
+{
+    std::lock_guard<std::mutex> lock(clientMutex_);
+    return {clientGeneration_, clientName_};
 }
 
 std::string StreamingServer::GetClientName() const

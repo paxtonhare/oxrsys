@@ -14,6 +14,7 @@ struct StreamingAudioFrame
 {
     std::vector<float> samples;
     int64_t presentationTimeNs = 0;
+    uint64_t generation = 0;
     uint32_t frameIndex = 0;
     uint32_t frameCount = 0;
 };

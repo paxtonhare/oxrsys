@@ -201,6 +201,8 @@ void InputManager::SetTrackingReceiver(TrackingReceiver* receiver)
     trackingReceiver_ = receiver;
     if (receiver == nullptr)
     {
+        streamingClientGeneration_ = 0;
+        streamingTrackingFlags_ = 0;
         streamingControllerActive_.fill(false);
         streamingControllerKnown_.fill(false);
         for (auto& handState : streamingHands_)
@@ -209,6 +211,19 @@ void InputManager::SetTrackingReceiver(TrackingReceiver* receiver)
         }
         streamingClientName_.clear();
         streamingControllerProfile_.clear();
+    }
+}
+
+void InputManager::SyncStreamingConnection(TrackingReceiver* receiver, uint64_t generation,
+                                           const std::string& clientName)
+{
+    if (trackingReceiver_ != receiver || streamingClientGeneration_ != generation)
+    {
+        // A complete reconnect may happen between frame polls, even with the same name.
+        SetTrackingReceiver(nullptr);
+        SetTrackingReceiver(receiver);
+        streamingClientGeneration_ = generation;
+        SetStreamingClientName(clientName);
     }
 }
 

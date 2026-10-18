@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #pragma once
+#include "AudioConnectionState.h"
 
 #include <array>
 #include <atomic>
@@ -87,6 +88,7 @@ public:
 
     // Get the connected client info
     std::string GetClientName() const;
+    std::pair<uint64_t, std::string> GetClientIdentity() const;
 
     // Access to tracking receiver (for InputManager integration)
     TrackingReceiver* GetTrackingReceiver() { return trackingReceiver_.get(); }
@@ -269,7 +271,7 @@ private:
     SocketHandle tcpControlClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpVideoClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     SocketHandle tcpTrackingClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
-    SocketHandle tcpAudioClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
+    AudioConnectionState audioConnection_;
     SocketHandle tcpSpatialClientSocket_ = oxrsys::runtime_socket::InvalidSocket;
     std::mutex tcpSocketMutex_;
     std::mutex disconnectMutex_;
@@ -286,6 +288,7 @@ private:
     uint16_t clientPort_ = 0;
     std::string clientName_;
     mutable std::mutex clientMutex_;
+    uint64_t clientGeneration_ = 0;
 
     // Threads
     std::thread broadcastThread_;

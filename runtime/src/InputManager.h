@@ -84,6 +84,8 @@ public:
                                        const std::string& profilePath) const;
     XrSpaceVelocity GetPoseVelocityForProfile(Hand hand, const std::string& componentPath,
                                              const std::string& profilePath) const;
+    void SyncStreamingConnection(TrackingReceiver* receiver, uint64_t generation,
+                                 const std::string& clientName);
     void SetStreamingClientName(const std::string& clientName);
 
     // Conformance automation overrides
@@ -143,6 +145,7 @@ private:
     uint32_t streamingTrackingFlags_ = 0;
     std::array<bool, 2> streamingControllerActive_ = {false, false};
     std::array<bool, 2> streamingControllerKnown_ = {false, false};
+    uint64_t streamingClientGeneration_ = 0;
     std::string streamingClientName_;
     std::string streamingControllerProfile_;
 

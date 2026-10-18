@@ -1055,3 +1055,45 @@ TEST_CASE("Aim velocity fallback requires grip activity for both hands", "[input
         CHECK(velocity.linearVelocity.x == (gripActive ? (hand == InputManager::Hand::Left ? 2.0f : 3.0f) : 0.0f));
     }
 }
+
+TEST_CASE("Streaming identity epoch catches same-device reconnect between frame polls", "[input][lifecycle]")
+{
+    InputManager im;
+    TrackingReceiver receiver;
+    im.SyncStreamingConnection(&receiver, 1, "Meta Quest 3");
+    oxr::protocol::TrackingPacket packet = {};
+    packet.timestampNs = 1'000'000'000;
+    packet.headOrientation[3] = 1.0f;
+    packet.leftControllerRot[3] = 1.0f;
+    packet.trackingFlags = oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE;
+    receiver.InjectPacket(reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+    im.Update(0);
+    REQUIRE(im.GetCurrentInteractionProfile(InputManager::Hand::Left) ==
+            "/interaction_profiles/meta/touch_plus_controller");
+
+    // No input detach or Session poll observes Disconnected. Receiver and name are reused.
+    receiver.Reset();
+    packet.timestampNs += 100'000'000;
+    packet.trackingFlags = oxr::protocol::TRACKING_FLAG_LEFT_HAND_ACTIVE;
+    PopulateLeftPinchingHand(packet, 0.2f, 1.3f, -0.2f);
+    receiver.InjectPacket(reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+    im.SyncStreamingConnection(&receiver, 2, "Meta Quest 3");
+    im.Update(0);
+    CHECK_FALSE(im.IsControllerTrackingActive(InputManager::Hand::Left));
+    CHECK(im.IsHandTrackingActive(InputManager::Hand::Left));
+    CHECK(im.GetCurrentInteractionProfile(InputManager::Hand::Left) ==
+          "/interaction_profiles/ext/hand_interaction_ext");
+    // Repeated polls must not reset newly learned controller state.
+    packet.timestampNs += 100'000'000;
+    packet.trackingFlags |= oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE;
+    receiver.InjectPacket(reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+    im.Update(0);
+    im.SyncStreamingConnection(&receiver, 2, "Meta Quest 3");
+    CHECK(im.IsControllerTrackingActive(InputManager::Hand::Left));
+    CHECK(im.IsHandTrackingActive(InputManager::Hand::Left));
+    // Metadata also refreshes when the next generation is a different model.
+    receiver.Reset();
+    im.SyncStreamingConnection(&receiver, 3, "Oculus Quest");
+    CHECK(im.GetCurrentInteractionProfile(InputManager::Hand::Left) ==
+          "/interaction_profiles/oculus/touch_controller");
+}

@@ -19,7 +19,8 @@
 ## Missing features
 
 - [ ] Deliver and cancel headset haptic commands.
-- [ ] Implement headset audio capture, transport, and playback.
+- [x] Implement opt-in current-app Quest USB audio capture, transport, and playback.
+- [ ] Qualify USB audio permissions, reconnect, and playback on physical headsets.
 - [ ] Implement spatial anchors, scene queries, and persistence.
 - [ ] Implement environment-depth and scene-mesh occlusion.
 

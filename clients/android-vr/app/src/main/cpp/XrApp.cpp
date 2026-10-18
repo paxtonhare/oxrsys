@@ -2504,14 +2504,8 @@ void XrApp::StopHeadsetAudio()
     }
     if (audioReceiveThread_.joinable())
     {
-        if (audioReceiveThread_.get_id() == std::this_thread::get_id())
-        {
-            audioReceiveThread_.detach();
-        }
-        else
-        {
-            audioReceiveThread_.join();
-        }
+        // Only the owner thread tears down playback; the receive thread merely exits.
+        audioReceiveThread_.join();
     }
     if (audioTcpSocket_ >= 0)
     {
@@ -2539,7 +2533,7 @@ void XrApp::AudioReceiveThreadMain()
         {
             if (audioReceiveRunning_.load())
             {
-                OnConnectionLost("USB audio socket closed");
+                LOGW("USB audio socket closed; continuing video without audio");
             }
             break;
         }
@@ -2547,7 +2541,7 @@ void XrApp::AudioReceiveThreadMain()
         {
             if (audioReceiveRunning_.load())
             {
-                OnConnectionLost("server stopped headset audio");
+                LOGI("Server stopped headset audio; continuing video");
             }
             break;
         }

@@ -667,9 +667,8 @@ struct ContentView: View {
                                 Text(mode.displayName).tag(mode)
                             }
                         }
-                        Toggle("Headset audio (unavailable)", isOn: streamingBinding(\.headsetAudio))
-                            .disabled(true)
-                            .help("Audio capture and playback are not implemented.")
+                        Toggle("Quest USB headset audio", isOn: streamingBinding(\.headsetAudio))
+                            .help("Stream current-app audio over USB. Requires macOS Screen & System Audio Recording permission. Reconnect after changing this setting.")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 8)
